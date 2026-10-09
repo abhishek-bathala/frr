@@ -50,7 +50,32 @@ docker run --rm --privileged -v /lib/modules:/lib/modules ubuntu:22.04 bash -lc 
 
 Expected result: the command prints at least one kernel module directory. If it prints nothing or reports that `/lib/modules` is missing, stop and restart Colima:
 
+Install the required kernel modules for FRR topotest:
+
+```
+# This enters the colima VM
+colima ssh
+sudo apt-get update
+sudo apt-get install linux-modules-extra-$(uname -r)
+sudo modprobe vrf && sudo modprobe mpls_router && sudo modprobe team
+# Add them to preserve accross reboots
+----
+cat /etc/modules-load.d/modules.conf 
+# /etc/modules is obsolete and has been replaced by /etc/modules-load.d/.
+# Please see modules-load.d(5) and modprobe.d(5) for details.
+#
+# Updating this file still works, but it is undocumented and unsupported.
+vrf
+mpls_router
+team
+----
+exit
+```
+
+Additional commands:
+
 ```bash
+colima list
 colima stop
 colima start --cpu 4 --memory 8 --disk 60
 ```
@@ -276,6 +301,12 @@ Start a stopped container:
 docker start frr-dev
 ```
 
+Attach to that container:
+
+```bash
+docker attach frr-dev
+```
+
 Open a new shell in a running container:
 
 ```bash
@@ -340,6 +371,7 @@ docker exec -it frr-dev bash
 ```
 
 Start `tmux` for long-running or interactive tests:
+Check the commands on https://tmuxcheatsheet.com/
 
 ```bash
 tmux
@@ -455,7 +487,7 @@ docker cp frr-dev:/tmp/topotests/<test-run>/<node>/<file>.pcap ~/mycaptures/
 Open `.pcap` files with Wireshark.
 
 
-## 12. Visualizer
+## 12. Visualizer Example
 
 The visualizer is a Flask server that runs inside the FRR container and is viewed from the host browser.
 
@@ -487,15 +519,40 @@ Detach from the server session:
 Ctrl+b, then d
 ```
 
-Run the mobility test in another container shell. The visualizer should show topology and endpoint movement events.
-
-Open the second container shell from the host with:
+The page shows only the legend until a test publishes the topology. Open a second container shell from the host:
 
 ```bash
 docker exec -it frr-dev bash
 ```
 
-## 13. Live Packet Chart
+Run the test from the second shell:
+
+```bash
+cd ~/frr/tests/topotests
+sudo -E pytest -s bgp_evpn_capstone/test_evpn_capstone.py
+```
+
+Once the routers start, the test sends the spines, VTEPs, hosts, and links to the visualizer. The server keeps these events, so you can open or refresh the page at any time during the run. If the server is not running, the test logs a message and continues.
+
+The test sends events to `http://127.0.0.1:5000` by default. To use a different server, set `VISUALIZER_URL`:
+
+```bash
+VISUALIZER_URL=http://127.0.0.1:5001 sudo -E pytest -s bgp_evpn_capstone/test_evpn_capstone.py
+```
+
+## 13. Live BGP Route Chart
+
+The route chart plots BGP EVPN route counts per leaf while the test runs. Every sampling interval, the test runs these commands on each leaf (`leaf1` to `leaf5`):
+
+| Chart metric | Command | Value used |
+| --- | --- | --- |
+| RT-2 MAC/IP routes | `show bgp l2vpn evpn route type macip json` | `numPrefix` |
+| All EVPN routes | `show bgp l2vpn evpn route json` | `numPrefix` |
+| Prefixes received | `show bgp l2vpn evpn summary json` | Sum of `pfxRcd` over all peers |
+
+Use the buttons above the chart to switch metrics. The chart draws one line per leaf plus a dashed `total` line. The boxes below the chart show the latest fabric-wide total for each metric.
+
+During host mobility, watch the RT-2 metric. When a host moves, the old leaf withdraws its MAC/IP route and the new leaf advertises it, so each leaf's line shows how it converges.
 
 Start the visualizer server first:
 
@@ -507,29 +564,28 @@ python3 tests/topotests/bgp_evpn_capstone/visualizer_server.py
 Run the test:
 
 ```bash
-sudo -E pytest -s tests/topotests/bgp_evpn_capstone/test_evpn_capstone.py
+cd ~/frr/tests/topotests
+sudo -E pytest -s bgp_evpn_capstone/test_evpn_capstone.py
 ```
 
-Open:
+Open on the host:
 
 ```text
-http://127.0.0.1:5000/packet-chart
+http://localhost:5000/route-chart
 ```
 
-Optional chart flags:
+Optional settings:
 
 | Variable | Meaning |
 | --- | --- |
-| `ENABLE_LIVE_PACKET_GRAPH=true|false` | Enable or disable packet sampling events |
-| `AUTO_OPEN_PACKET_CHART_WINDOW=true|false` | Enable or disable automatic browser pop-up |
-| `AUTO_START_PACKET_CHART_SERVER=true|false` | Auto-start server if port 5000 is not already serving |
-| `PACKET_SAMPLE_INTERVAL_SECONDS=<float>` | Sampling interval; default is `1.0`, minimum is `0.2` |
-| `PACKET_CHART_URL=<url>` | Override chart URL; default is `/packet-chart` |
+| `ENABLE_LIVE_ROUTE_GRAPH=true\|false` | Enable or disable route sampling; default is `true` |
+| `ROUTE_SAMPLE_INTERVAL_SECONDS=<float>` | Sampling interval; default is `1.0`, minimum is `0.5` |
+| `VISUALIZER_URL=<url>` | Visualizer server address; default is `http://127.0.0.1:5000` |
 
 Example:
 
 ```bash
-ENABLE_LIVE_PACKET_GRAPH=true AUTO_OPEN_PACKET_CHART_WINDOW=true PACKET_SAMPLE_INTERVAL_SECONDS=0.75 sudo -E pytest -s tests/topotests/bgp_evpn_capstone/test_evpn_capstone.py
+ROUTE_SAMPLE_INTERVAL_SECONDS=0.5 sudo -E pytest -s bgp_evpn_capstone/test_evpn_capstone.py
 ```
 
 ## 14. Troubleshooting
@@ -609,6 +665,14 @@ docker ps
 If the port is missing, remove and recreate the container with the port published.
 
 On macOS, also check whether AirPlay Receiver is using port `5000`.
+
+### Visualizer shows only the legend
+
+The graph is empty until a test publishes the topology. Check these points:
+
+- `visualizer_server.py` is running before or during the test.
+- The test log has no `Visualizer not reachable` message.
+- The host browser has internet access. The page loads `socket.io` and `vis-network` from public CDNs.
 
 ### Colima kernel module check fails
 

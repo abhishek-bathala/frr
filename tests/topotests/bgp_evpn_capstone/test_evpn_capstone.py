@@ -34,6 +34,10 @@ This test only validates that the fabric comes up:
 import json
 import os
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -118,6 +122,95 @@ LEAVES = {
 L3VNI = 500
 L3BR = "br500"
 TENANT_VRF = "VRF500"
+
+VISUALIZER_URL = os.environ.get("VISUALIZER_URL", "http://127.0.0.1:5000")
+
+ENABLE_LIVE_ROUTE_GRAPH = (
+    os.environ.get("ENABLE_LIVE_ROUTE_GRAPH", "true").lower() == "true"
+)
+ROUTE_SAMPLE_INTERVAL = max(
+    0.5, float(os.environ.get("ROUTE_SAMPLE_INTERVAL_SECONDS", "1.0"))
+)
+_sampler_stop = threading.Event()
+
+
+def _viz_post(event):
+    "Best-effort POST of one event to the visualizer; return False if unreachable."
+    req = urllib.request.Request(
+        VISUALIZER_URL + "/event",
+        data=json.dumps(event).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=1).close()
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _viz_publish_topology():
+    "Send the fabric nodes and links to the visualizer, if it is running."
+    if not _viz_post({"action": "RESET"}):
+        logger.info("Visualizer not reachable at %s, skipping", VISUALIZER_URL)
+        return
+
+    for spine in SPINES:
+        _viz_post({"action": "ADD_NODE", "id": spine, "type": "spine"})
+    for leaf, spec in LEAVES.items():
+        _viz_post({"action": "ADD_NODE", "id": leaf, "type": "vtep"})
+        for host in spec["hosts"]:
+            _viz_post({"action": "ADD_NODE", "id": host, "type": "host"})
+
+    for spine in SPINES:
+        for leaf in LEAVES:
+            _viz_post({"action": "ADD_LINK", "source": spine, "target": leaf})
+    for leaf, spec in LEAVES.items():
+        for host in spec["hosts"]:
+            _viz_post({"action": "ADD_LINK", "source": leaf, "target": host})
+
+
+def _leaf_route_counts(router):
+    "Return RT-2, all-EVPN and received-prefix counts for one leaf."
+    macip = router.vtysh_cmd(
+        "show bgp l2vpn evpn route type macip json", isjson=True
+    )
+    evpn = router.vtysh_cmd("show bgp l2vpn evpn route json", isjson=True)
+    summary = router.vtysh_cmd("show bgp l2vpn evpn summary json", isjson=True)
+    pfx_rcvd = sum(
+        int(peer.get("pfxRcd", 0)) for peer in summary.get("peers", {}).values()
+    )
+    return {
+        "macip": int(macip.get("numPrefix", 0)),
+        "evpn": int(evpn.get("numPrefix", 0)),
+        "pfx_rcvd": pfx_rcvd,
+    }
+
+
+def _route_sampler(tgen):
+    "Periodically send per-leaf BGP EVPN route counts to the visualizer."
+    if not _viz_post({"action": "ROUTE_SAMPLE_RESET"}):
+        return
+
+    metrics = ("macip", "evpn", "pfx_rcvd")
+    while not _sampler_stop.wait(ROUTE_SAMPLE_INTERVAL):
+        sample = {m: {"total": 0, "per_router": {}} for m in metrics}
+        for leaf in LEAVES:
+            try:
+                counts = _leaf_route_counts(tgen.gears[leaf])
+            except Exception:  # pylint: disable=broad-except
+                # Router may be starting or stopping; skip it this round.
+                continue
+            for m in metrics:
+                sample[m]["per_router"][leaf] = counts[m]
+                sample[m]["total"] += counts[m]
+
+        _viz_post(
+            {
+                "action": "ROUTE_SAMPLE",
+                "ts": time.strftime("%H:%M:%S"),
+                "metrics": sample,
+            }
+        )
 
 
 def build_topo(tgen):
@@ -223,9 +316,22 @@ def setup_module(mod):
 
     tgen.start_router()
 
+    _viz_publish_topology()
 
-def teardown_module(_mod):
+    if ENABLE_LIVE_ROUTE_GRAPH:
+        _sampler_stop.clear()
+        mod.route_sampler = threading.Thread(
+            target=_route_sampler, args=(tgen,), daemon=True
+        )
+        mod.route_sampler.start()
+
+
+def teardown_module(mod):
     "Teardown the pytest environment"
+    _sampler_stop.set()
+    sampler = getattr(mod, "route_sampler", None)
+    if sampler:
+        sampler.join(timeout=10)
     tgen = get_topogen()
     tgen.stop_topology()
 

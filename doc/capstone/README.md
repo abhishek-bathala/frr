@@ -46,8 +46,8 @@ sudo -E pytest -s bgp_evpn_capstone/test_evpn_capstone.py
 ```
 
 An optional visualizer (`visualizer_server.py`) can display the topology and
-live packet activity while the test runs. See the
-[student cookbook](student_cookbook.md) for the visualizer and packet-chart
+live BGP EVPN route counts while the test runs. See the
+[student cookbook](student_cookbook.md) for the visualizer and route-chart
 instructions.
 
 ## Getting Started

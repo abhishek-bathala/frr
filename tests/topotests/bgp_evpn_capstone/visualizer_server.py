@@ -9,7 +9,7 @@ browser clients in real time.
 # flask_socketio adds WebSocket/event-style messaging on top of Flask.
 # standard library logging module used to configure Flask/Werkzeug log output
 from flask import Flask, render_template, request
-from flask_socketio import SocketIO
+from flask_socketio import SocketIO, emit
 import logging
 
 # suppress standard Werkzeug request logs to focus on mobility/debug messages
@@ -26,6 +26,15 @@ app = Flask(__name__)
 # this is convenient during local development and containerized test runs
 socketio = SocketIO(app, cors_allowed_origins="*")
 
+# Topology events kept so browsers that connect late (or refresh) see the graph.
+event_history = []
+
+
+@socketio.on('connect')
+def replay_history():
+    for event in event_history:
+        emit('network_event', event)
+
 # HTTP GET / serves the visualizer page.
 @app.route('/')
 def index():
@@ -33,10 +42,10 @@ def index():
     return render_template('index.html')
 
 
-@app.route('/packet-chart')
-def packet_chart():
-    """Serve the standalone live packet chart page."""
-    return render_template('packet_chart.html')
+@app.route('/route-chart')
+def route_chart():
+    """Serve the live BGP EVPN route chart page."""
+    return render_template('route_chart.html')
 
 
 @app.route('/health')
@@ -51,6 +60,12 @@ def receive_event():
 
     # parse request JSON body into a Python dict/list (or None if missing).
     data = request.json
+
+    if isinstance(data, dict):
+        if data.get('action') == 'RESET':
+            event_history.clear()
+        elif data.get('action') not in ('PACKET_FLOW', 'ROUTE_SAMPLE', 'ROUTE_SAMPLE_RESET'):
+            event_history.append(data)
 
     # emit one Socket.IO event named `network_event` to every connected client.
     # the frontend listens for this event and updates topology/animations.
