@@ -25,8 +25,13 @@ The test checks that leaf1/leaf2 swap local vs remote ownership and that the
 controller behind leaf5 can still reach the robot.
 """
 
+import json
 import os
 import sys
+import threading
+import time
+import urllib.error
+import urllib.request
 
 import pytest
 
@@ -112,12 +117,136 @@ ROBOT = {
     "dest_leaf": "leaf2",
 }
 
+VISUALIZER_URL = os.environ.get("VISUALIZER_URL", "http://127.0.0.1:5000")
+
+ENABLE_LIVE_ROUTE_GRAPH = (
+    os.environ.get("ENABLE_LIVE_ROUTE_GRAPH", "true").lower() == "true"
+)
+ROUTE_SAMPLE_INTERVAL = max(
+    0.5, float(os.environ.get("ROUTE_SAMPLE_INTERVAL_SECONDS", "1.0"))
+)
+_sampler_stop = threading.Event()
+
+HOST_CONFIG_CMD = "ip -br addr; ip -br link; ip route"
+
 
 def _announce(msg):
     """Print a timestamped status line to the pytest console (needs pytest -s)."""
     line = "[mobility] {}".format(msg)
     print(line, flush=True)
     logger.info(msg)
+
+
+def _viz_post(event):
+    "Best-effort POST of one event to the visualizer; return False if unreachable."
+    req = urllib.request.Request(
+        VISUALIZER_URL + "/event",
+        data=json.dumps(event).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=1).close()
+        return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _viz_publish_topology():
+    "Send the fabric nodes and links to the visualizer, if it is running."
+    if not _viz_post({"action": "RESET"}):
+        logger.info("Visualizer not reachable at %s, skipping", VISUALIZER_URL)
+        return False
+
+    for spine in SPINES:
+        _viz_post({"action": "ADD_NODE", "id": spine, "type": "spine"})
+    for leaf, spec in LEAVES.items():
+        _viz_post({"action": "ADD_NODE", "id": leaf, "type": "vtep"})
+        for host in spec["hosts"]:
+            _viz_post({"action": "ADD_NODE", "id": host, "type": "host"})
+    _viz_post({"action": "ADD_NODE", "id": ROBOT["name"], "type": "host"})
+
+    for spine in SPINES:
+        for leaf in LEAVES:
+            _viz_post({"action": "ADD_LINK", "source": spine, "target": leaf})
+    for leaf, spec in LEAVES.items():
+        for host in spec["hosts"]:
+            _viz_post({"action": "ADD_LINK", "source": leaf, "target": host})
+    # Only the starting access link is live; the move swaps it (_move_robot).
+    _viz_post(
+        {"action": "ADD_LINK", "source": ROBOT["start_leaf"], "target": ROBOT["name"]}
+    )
+    return True
+
+
+def _viz_publish_host_config(tgen, host):
+    "Send one host's addresses, links and routes to the visualizer."
+    _viz_post(
+        {
+            "action": "NODE_CONFIG",
+            "id": host,
+            "config": tgen.net[host].cmd(HOST_CONFIG_CMD),
+        }
+    )
+
+
+def _viz_publish_configs(tgen):
+    "Send each node's configuration so the visualizer can show it on click."
+    for rname, router in tgen.routers().items():
+        _viz_post(
+            {
+                "action": "NODE_CONFIG",
+                "id": rname,
+                "config": router.vtysh_cmd("show running-config"),
+            }
+        )
+    for spec in LEAVES.values():
+        for host in spec["hosts"]:
+            _viz_publish_host_config(tgen, host)
+    _viz_publish_host_config(tgen, ROBOT["name"])
+
+
+def _leaf_route_counts(router):
+    "Return RT-2, all-EVPN and received-prefix counts for one leaf."
+    macip = router.vtysh_cmd(
+        "show bgp l2vpn evpn route type macip json", isjson=True
+    )
+    evpn = router.vtysh_cmd("show bgp l2vpn evpn route json", isjson=True)
+    summary = router.vtysh_cmd("show bgp l2vpn evpn summary json", isjson=True)
+    pfx_rcvd = sum(
+        int(peer.get("pfxRcd", 0)) for peer in summary.get("peers", {}).values()
+    )
+    return {
+        "macip": int(macip.get("numPrefix", 0)),
+        "evpn": int(evpn.get("numPrefix", 0)),
+        "pfx_rcvd": pfx_rcvd,
+    }
+
+
+def _route_sampler(tgen):
+    "Periodically send per-leaf BGP EVPN route counts to the visualizer."
+    if not _viz_post({"action": "ROUTE_SAMPLE_RESET"}):
+        return
+
+    metrics = ("macip", "evpn", "pfx_rcvd")
+    while not _sampler_stop.wait(ROUTE_SAMPLE_INTERVAL):
+        sample = {m: {"total": 0, "per_router": {}} for m in metrics}
+        for leaf in LEAVES:
+            try:
+                counts = _leaf_route_counts(tgen.gears[leaf])
+            except Exception:  # pylint: disable=broad-except
+                # Router may be starting or stopping; skip it this round.
+                continue
+            for m in metrics:
+                sample[m]["per_router"][leaf] = counts[m]
+                sample[m]["total"] += counts[m]
+
+        _viz_post(
+            {
+                "action": "ROUTE_SAMPLE",
+                "ts": time.strftime("%H:%M:%S"),
+                "metrics": sample,
+            }
+        )
 
 
 def build_topo(tgen):
@@ -270,9 +399,24 @@ def setup_module(mod):
     tgen.start_router()
     _announce("FRR started on all routers")
 
+    if _viz_publish_topology():
+        _viz_publish_configs(tgen)
+        _announce("Topology published to visualizer at {}".format(VISUALIZER_URL))
 
-def teardown_module(_mod):
+    if ENABLE_LIVE_ROUTE_GRAPH:
+        _sampler_stop.clear()
+        mod.route_sampler = threading.Thread(
+            target=_route_sampler, args=(tgen,), daemon=True
+        )
+        mod.route_sampler.start()
+
+
+def teardown_module(mod):
     "Teardown the pytest environment"
+    _sampler_stop.set()
+    sampler = getattr(mod, "route_sampler", None)
+    if sampler:
+        sampler.join(timeout=10)
     tgen = get_topogen()
     tgen.stop_topology()
 
@@ -467,8 +611,14 @@ def _move_robot(tgen, old_leaf, new_leaf):
     _announce("MOVE START: plug {} into {}, then unplug from {}".format(name, new_leaf, old_leaf))
 
     robot.cmd_raises("ip addr flush dev eth-{}".format(old_leaf))
+<<<<<<< Updated upstream
 
     _announce("MOVE: robot IP flushed from eth-{}; link to {} still up".format(old_leaf, old_leaf))
+=======
+    robot.cmd_raises("ip link set eth-{} down".format(old_leaf))
+    _viz_post({"action": "DEL_LINK", "source": old_leaf, "target": name})
+    _announce("MOVE: {} access port down; robot iface eth-{} flushed/down".format(old_leaf, old_leaf))
+>>>>>>> Stashed changes
 
     tgen.net[new_leaf].cmd_raises(
         "ip link set eth-{} master {}".format(name, new_br)
@@ -478,6 +628,12 @@ def _move_robot(tgen, old_leaf, new_leaf):
         "ip addr add {} dev eth-{}".format(ROBOT["ip"], new_leaf)
     )
     robot.cmd_raises("ip link set eth-{} up".format(new_leaf))
+<<<<<<< Updated upstream
+=======
+    robot.cmd("ip route replace default via {}".format(ROBOT["gw"]))
+    _viz_post({"action": "ADD_LINK", "source": new_leaf, "target": name})
+    _viz_publish_host_config(tgen, name)
+>>>>>>> Stashed changes
     _announce(
         "MOVE: {} access port in {}; robot IP {} on eth-{}".format(
             new_leaf, new_br, ROBOT["ip"], new_leaf
