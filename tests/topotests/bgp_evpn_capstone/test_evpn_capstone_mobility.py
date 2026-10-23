@@ -611,14 +611,8 @@ def _move_robot(tgen, old_leaf, new_leaf):
     _announce("MOVE START: plug {} into {}, then unplug from {}".format(name, new_leaf, old_leaf))
 
     robot.cmd_raises("ip addr flush dev eth-{}".format(old_leaf))
-<<<<<<< Updated upstream
 
     _announce("MOVE: robot IP flushed from eth-{}; link to {} still up".format(old_leaf, old_leaf))
-=======
-    robot.cmd_raises("ip link set eth-{} down".format(old_leaf))
-    _viz_post({"action": "DEL_LINK", "source": old_leaf, "target": name})
-    _announce("MOVE: {} access port down; robot iface eth-{} flushed/down".format(old_leaf, old_leaf))
->>>>>>> Stashed changes
 
     tgen.net[new_leaf].cmd_raises(
         "ip link set eth-{} master {}".format(name, new_br)
@@ -628,12 +622,6 @@ def _move_robot(tgen, old_leaf, new_leaf):
         "ip addr add {} dev eth-{}".format(ROBOT["ip"], new_leaf)
     )
     robot.cmd_raises("ip link set eth-{} up".format(new_leaf))
-<<<<<<< Updated upstream
-=======
-    robot.cmd("ip route replace default via {}".format(ROBOT["gw"]))
-    _viz_post({"action": "ADD_LINK", "source": new_leaf, "target": name})
-    _viz_publish_host_config(tgen, name)
->>>>>>> Stashed changes
     _announce(
         "MOVE: {} access port in {}; robot IP {} on eth-{}".format(
             new_leaf, new_br, ROBOT["ip"], new_leaf
@@ -642,6 +630,8 @@ def _move_robot(tgen, old_leaf, new_leaf):
 
     robot.cmd("ip route replace default via {}".format(ROBOT["gw"]))
     _announce("MOVE: robot default route via {} on eth-{}".format(ROBOT["gw"], new_leaf))
+    _viz_post({"action": "ADD_LINK", "source": new_leaf, "target": name})
+    _viz_publish_host_config(tgen, name)
 
     def _learned_on_new_leaf():
         robot.cmd("ping -c 1 -W 1 {}".format(ROBOT["gw"]))
@@ -651,15 +641,16 @@ def _move_robot(tgen, old_leaf, new_leaf):
     assert result is None, result
     _announce("MOVE: {} learned robot MAC locally".format(new_leaf))
 
+    tgen.net[old_leaf].cmd_raises("ip link set eth-{} nomaster".format(name))
+    tgen.net[old_leaf].cmd_raises("ip link set eth-{} down".format(name))
+    robot.cmd_raises("ip link set eth-{} down".format(old_leaf))
+    _announce("MOVE: {} access port down; robot iface eth-{} flushed/down".format(old_leaf, old_leaf))
+    _viz_post({"action": "DEL_LINK", "source": old_leaf, "target": name})
+
     _, result = topotest.run_and_expect(
         lambda: _mac_is_remote(old_rtr, new_vtep), None, count=30, wait=1
     )
     assert result is None, result
-
-    tgen.net[old_leaf].cmd_raises("ip link set eth-{} nomaster".format(name))
-    tgen.net[old_leaf].cmd_raises("ip link set eth-{} down".format(name))
-    robot.cmd_raises("ip link set eth-{} down".format(old_leaf))
-    _announce("MOVE: {} access port down; robot iface eth-{} down".format(old_leaf, old_leaf))
 
     _prime_robot(tgen)
     _announce("MOVE DONE: waiting for EVPN MAC mobility to converge")
