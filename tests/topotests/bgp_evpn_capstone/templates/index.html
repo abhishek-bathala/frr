@@ -51,6 +51,11 @@
         #config-panel header { display: flex; justify-content: space-between; align-items: center; }
         #config-panel pre { flex: 1; overflow: auto; margin: 10px 0 0; font-size: 12px; white-space: pre; }
         #config-close { background: none; border: 1px solid #666; color: white; cursor: pointer; border-radius: 4px; }
+
+        /* narration box for step-by-step demos (CAPTION events). */
+        #caption { display: none; position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 10; width: min(760px, calc(100vw - 40px)); box-sizing: border-box; background: rgba(0,0,0,0.85); border: 1px solid #444; border-radius: 8px; padding: 12px 16px; }
+        #caption h4 { margin: 0 0 6px; font-size: 16px; }
+        #caption p { margin: 0; font-size: 14px; line-height: 1.5; color: #ddd; }
     </style>
 </head>
 <body>
@@ -72,6 +77,8 @@
     <!-- container element where vis-network renders the topology graph -->
     <div id="mynetwork"></div>
     <div id="packet-layer"></div>
+
+    <div id="caption"><h4 id="caption-title"></h4><p id="caption-text"></p></div>
 
     <div id="config-panel">
         <header><h3 id="config-title" style="margin: 0;"></h3><button id="config-close">Close</button></header>
@@ -503,6 +510,11 @@
         };
         var network = new vis.Network(container, data, options);
 
+        var NODE_STATE_BORDER = { ok: '#39d353', bad: '#ff5a66', neutral: '#ffffff' };
+        var captionBox = document.getElementById('caption');
+        var captionTitle = document.getElementById('caption-title');
+        var captionText = document.getElementById('caption-text');
+
         var nodeConfigs = new Map();
         var configPanel = document.getElementById('config-panel');
         var configTitle = document.getElementById('config-title');
@@ -598,6 +610,28 @@
                 if (configPanel.style.display === 'flex' && configTitle.textContent === msg.id) {
                     showNodeConfig(msg.id);
                 }
+            }
+            else if (msg.action === 'NODE_STATE') {
+                // Relabel a node and color its border: ok, bad, or neutral.
+                var stateNode = nodes.get(msg.id);
+                if (stateNode) {
+                    var border = NODE_STATE_BORDER[msg.status] || NODE_STATE_BORDER.neutral;
+                    var background = (stateNode.color && stateNode.color.background) || '#4da6ff';
+                    nodes.update({
+                        id: msg.id,
+                        label: msg.label || msg.id,
+                        color: { background: background, border: border },
+                        borderWidth: msg.status === 'neutral' ? 2 : 5
+                    });
+                }
+            }
+            else if (msg.action === 'CAPTION') {
+                captionTitle.textContent = msg.title || '';
+                captionText.textContent = msg.text || '';
+                captionBox.style.display = (msg.title || msg.text) ? 'block' : 'none';
+            }
+            else if (msg.action === 'RESET') {
+                captionBox.style.display = 'none';
             }
         });
     </script>

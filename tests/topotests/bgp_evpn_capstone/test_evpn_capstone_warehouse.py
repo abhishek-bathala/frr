@@ -79,6 +79,12 @@ Environment variables:
   WAREHOUSE_ROAM_GAP             seconds the radio is off between APs (default 0)
   WAREHOUSE_REARP_AFTER          if > 0, the robot ARPs for its gateway again
                                  this many seconds after each move (default 0)
+  WAREHOUSE_TRACE_MOVE           move number to trace (default 0, off). For
+                                 that move, zebra vxlan/kernel debugs are on
+                                 for the old and new leaf, and timestamped
+                                 neighbor/FDB events from both leaves and the
+                                 robot are saved to trace_move<N>_*.txt in the
+                                 log directory
   WAREHOUSE_MAX_MISSED           missed instructions allowed per move (default 0)
   WAREHOUSE_WATCH_CONTROL_PLANE  "false" to skip the per-leaf vtysh polling,
                                  which adds load while timing (default "true")
@@ -218,6 +224,7 @@ PROBE_INTERVAL = min(
 BASELINE_SECONDS = _env_float("WAREHOUSE_BASELINE_SECONDS", "20")
 ROAM_GAP = _env_float("WAREHOUSE_ROAM_GAP", "0")
 REARP_AFTER = _env_float("WAREHOUSE_REARP_AFTER", "0")
+TRACE_MOVE = int(os.environ.get("WAREHOUSE_TRACE_MOVE", "0"))
 MAX_MISSED = int(os.environ.get("WAREHOUSE_MAX_MISSED", "0"))
 WATCH_CONTROL_PLANE = _env_bool("WAREHOUSE_WATCH_CONTROL_PLANE", "true")
 ENFORCE = _env_bool("WAREHOUSE_ENFORCE", "false")
@@ -606,6 +613,86 @@ def _snapshot(tgen):
     return snap
 
 
+ZEBRA_TRACE_DEBUGS = ("debug zebra vxlan", "debug zebra kernel")
+
+
+class _MoveTrace:
+    """Record what the kernels and zebra do with the robot during one move.
+
+    Monitors run under "timeout", so they exit on their own and no signal
+    has to reach a process inside a namespace.
+    """
+
+    def __init__(self, tgen, move_no, old_leaf, new_leaf, seconds):
+        self.tgen = tgen
+        self.move_no = move_no
+        self.leaves = (old_leaf, new_leaf)
+        self.seconds = seconds
+        self.procs = []
+
+    def _monitor(self, node, label, cmd):
+        proc = self.tgen.net[node].popen(
+            ["timeout", str(int(self.seconds))] + cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        self.procs.append(("{}_{}".format(node, label), proc))
+
+    def _write(self, label, text):
+        path = os.path.join(
+            self.tgen.logdir, "trace_move{}_{}.txt".format(self.move_no, label)
+        )
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def start(self):
+        "Turn on zebra debugs and start the event monitors."
+        settings = []
+        for leaf in self.leaves:
+            router = self.tgen.gears[leaf]
+            for cmd in ZEBRA_TRACE_DEBUGS:
+                router.vtysh_cmd(cmd)
+            node = self.tgen.net[leaf]
+            settings.append("== {}\n{}".format(leaf, node.cmd(
+                "sysctl net.ipv4.conf.br1000.arp_accept "
+                "net.ipv4.neigh.br1000.base_reachable_time_ms "
+                "net.ipv4.neigh.br1000.gc_stale_time; "
+                "ip -d neigh show {addr}; "
+                "bridge fdb show | grep -i {mac}".format(
+                    addr=ROBOT["addr"], mac=ROBOT["mac"])
+            )))
+            self._monitor(leaf, "neigh", ["ip", "-ts", "monitor", "neigh"])
+            # iproute2 5.15's bridge has -timestamp but not -ts.
+            self._monitor(leaf, "fdb", ["bridge", "-timestamp", "monitor", "fdb"])
+        self._monitor(ROBOT["name"], "neigh", ["ip", "-ts", "monitor", "neigh"])
+        self._write("before", "\n".join(settings))
+        # Give the monitors time to subscribe before the move.
+        time.sleep(0.3)
+
+    def finish(self, t_move):
+        "Collect monitor output, turn debugs off, and return the file paths."
+        paths = []
+        for label, proc in self.procs:
+            try:
+                out, _ = proc.communicate(timeout=self.seconds + 10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                out, _ = proc.communicate()
+            if isinstance(out, bytes):
+                out = out.decode(errors="replace")
+            header = "# move {} started at {} ({:.6f})\n".format(
+                self.move_no,
+                time.strftime("%H:%M:%S", time.localtime(t_move)), t_move,
+            )
+            paths.append(self._write(label, header + out))
+        for leaf in self.leaves:
+            router = self.tgen.gears[leaf]
+            for cmd in ZEBRA_TRACE_DEBUGS:
+                router.vtysh_cmd("no " + cmd)
+        return paths
+
+
 class _ControlPlaneWatcher:
     """Poll each leaf in its own thread and timestamp when its check passes.
 
@@ -865,6 +952,7 @@ def test_fabric_converged():
         "probe_interval_s": PROBE_INTERVAL,
         "roam_gap_s": ROAM_GAP,
         "rearp_after_s": REARP_AFTER,
+        "trace_move": TRACE_MOVE,
         "max_missed_per_move": MAX_MISSED,
         "control_plane_watch": WATCH_CONTROL_PLANE,
         "poll_interval_s": POLL_INTERVAL,
@@ -950,7 +1038,16 @@ def test_sustained_mobility():
                 )
                 watcher.precheck()
 
-            delay = t_stream + PRE_ROLL + index * MOVE_PERIOD - time.time()
+            t_scheduled = t_stream + PRE_ROLL + index * MOVE_PERIOD
+            trace = None
+            if index + 1 == TRACE_MOVE:
+                # Stop tracing a few seconds before the next move, leaving
+                # time for the snapshot and pre-move checks.
+                seconds = max(3.0, t_scheduled - time.time() + MOVE_PERIOD - 5.0)
+                trace = _MoveTrace(tgen, index + 1, old_leaf, new_leaf, seconds)
+                trace.start()
+
+            delay = t_scheduled - time.time()
             if delay > 0:
                 time.sleep(delay)
 
@@ -963,6 +1060,7 @@ def test_sustained_mobility():
 
             control = watcher.finish(t_move_mono) if watcher else {}
             after = _mobility_state(tgen)
+            trace_files = trace.finish(t_move) if trace else []
 
             move = {
                 "move": index + 1,
@@ -977,6 +1075,7 @@ def test_sustained_mobility():
                 ),
                 "mobility_before": before,
                 "mobility_after": after,
+                "trace_files": trace_files,
             }
             moves.append(move)
             _announce("Move {}: {} -> {} done; control plane {}; {}".format(
