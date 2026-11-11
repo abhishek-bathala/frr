@@ -1,0 +1,91 @@
+Trial 4: robot leaf1 -> leaf2, break before make, gap 3.0 s
+Robot dropped its link to leaf1 at 19:50:23.745966 (1794426623.745966); times are relative to it.
+
+== Timeline
+       +0.0 ms  robot      drops its link to leaf1 (break)
+       +7.6 ms  leaf1      leaf1 flushed the robot MAC (cable unplugged)
+      +15.2 ms  controller first probe lost
+     +162.5 ms  leaf3      leaf3 removed the robot MAC (EVPN withdraw from leaf1)
+     +217.2 ms  leaf5      leaf5 withdrew the robot /32
+    +3022.0 ms  robot      link to leaf2 up, pings its gateway (make)
+    +3091.8 ms  leaf2      leaf2 learned the robot MAC (robot connected)
+    +3141.6 ms  leaf2      leaf2 learned the robot IP from ARP
+    +3143.2 ms  controller first probe delivered again
+    +3315.4 ms  leaf3      leaf3 points the robot MAC at leaf2
+    +3355.7 ms  leaf5      leaf5 routes the robot /32 to leaf2
+  never seen in the window: leaf1 points the robot MAC at leaf2
+
+== Result
+  outage 3128.0 ms, 30 of 104 instructions missed
+  of which after the robot connected to leaf2: 121.2 ms
+  leaf5 withdrew the /32 before the robot connected: yes
+
+== EVPN state at the end of the trial
+  leaf1: {'type': 'remote', 'remoteVtep': '10.0.0.2', 'localSequence': 2, 'remoteSequence': 0, 'isDuplicate': False}
+  leaf2: {'type': 'local', 'remoteVtep': None, 'localSequence': 0, 'remoteSequence': 0, 'isDuplicate': False}
+  leaf3: {'type': 'remote', 'remoteVtep': '10.0.0.2', 'localSequence': 0, 'remoteSequence': 0, 'isDuplicate': False}
+  leaf4: {'type': 'remote', 'remoteVtep': '10.0.0.2', 'localSequence': 0, 'remoteSequence': 0, 'isDuplicate': False}
+
+== Missed instructions
+      +76.2 ms  #5670   MISSED
+     +176.5 ms  #5680   MISSED
+     +287.5 ms  #5690   MISSED
+     +389.9 ms  #5700   MISSED
+     +505.5 ms  #5710   MISSED
+     +605.7 ms  #5720   MISSED
+     +709.0 ms  #5730   MISSED
+     +807.3 ms  #5740   MISSED
+     +906.0 ms  #5750   LATE
+    +1005.2 ms  #5760   LATE
+    +1106.3 ms  #5770   LATE
+    +1206.9 ms  #5780   LATE
+    +1307.4 ms  #5790   LATE
+    +1407.5 ms  #5800   LATE
+    +1505.5 ms  #5810   LATE
+    +1605.5 ms  #5820   LATE
+    +1707.8 ms  #5830   LATE
+    +1806.8 ms  #5840   LATE
+    +1908.6 ms  #5850   LATE
+    +2007.9 ms  #5860   LATE
+    +2105.5 ms  #5870   LATE
+    +2205.6 ms  #5880   LATE
+    +2308.8 ms  #5890   LATE
+    +2406.5 ms  #5900   LATE
+    +2519.2 ms  #5910   LATE
+    +2660.6 ms  #5920   LATE
+    +2761.2 ms  #5930   LATE
+    +2860.3 ms  #5940   LATE
+    +2961.7 ms  #5950   LATE
+    +3061.6 ms  #5960   LATE
+
+== Kernel events about the robot (ip/bridge monitor)
+       +7.6 ms  leaf1  Deleted 00:00:00:00:01:00 dev eth-robot1 master br1000 
+     +140.8 ms  leaf4  45.0.0.100 dev br1000  FAILED proto zebra 
+     +151.8 ms  leaf4  Deleted 45.0.0.100 dev br1000  FAILED proto zebra 
+     +155.6 ms  leaf2  Deleted 00:00:00:00:01:00 dev vni1000 dst 10.0.0.1 self extern_learn 
+     +156.1 ms  leaf2  45.0.0.100 dev br1000  FAILED proto zebra 
+     +156.1 ms  leaf2  Deleted 45.0.0.100 dev br1000  FAILED proto zebra 
+     +160.7 ms  leaf4  Deleted 00:00:00:00:01:00 dev vni1000 dst 10.0.0.1 self extern_learn 
+     +162.2 ms  leaf3  45.0.0.100 dev br1000  FAILED proto zebra 
+     +162.5 ms  leaf3  Deleted 00:00:00:00:01:00 dev vni1000 dst 10.0.0.1 self extern_learn 
+     +162.5 ms  leaf3  Deleted 45.0.0.100 dev br1000  FAILED proto zebra 
+     +197.5 ms  leaf3  Deleted 45.0.0.100 nhid 40 via 10.0.0.1 dev br500 table 500 proto bgp metric 20 onlink 
+     +203.9 ms  leaf4  Deleted 45.0.0.100 nhid 41 via 10.0.0.1 dev br500 table 500 proto bgp metric 20 onlink 
+     +217.2 ms  leaf5  Deleted 45.0.0.100 nhid 48 via 10.0.0.1 dev br500 table 500 proto bgp metric 20 onlink 
+     +233.2 ms  leaf2  Deleted 45.0.0.100 nhid 46 via 10.0.0.1 dev br500 table 500 proto bgp metric 20 onlink 
+     +666.1 ms  leaf1  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 PROBE
+    +3091.8 ms  leaf2  00:00:00:00:01:00 dev eth-robot1 master br1000 
+    +3141.6 ms  leaf2  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 STALE
+    +3151.4 ms  leaf3  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 STALE
+    +3158.9 ms  leaf4  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 STALE
+    +3315.4 ms  leaf3  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 extern_learn  NOARP proto zebra 
+    +3315.4 ms  leaf3  00:00:00:00:01:00 dev vni1000 dst 10.0.0.2 self extern_learn 
+    +3327.6 ms  leaf1  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 extern_learn  NOARP proto zebra 
+    +3355.7 ms  leaf5  45.0.0.100 nhid 51 via 10.0.0.2 dev br500 table 500 proto bgp metric 20 onlink 
+    +3365.6 ms  leaf4  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 extern_learn  NOARP proto zebra 
+    +3368.7 ms  leaf4  00:00:00:00:01:00 dev vni1000 dst 10.0.0.2 self extern_learn 
+    +3405.6 ms  leaf4  45.0.0.100 nhid 45 via 10.0.0.2 dev br500 table 500 proto bgp metric 20 onlink 
+    +3409.9 ms  leaf1  45.0.0.100 nhid 51 via 10.0.0.2 dev br500 table 500 proto bgp metric 20 onlink 
+    +3419.9 ms  leaf3  45.0.0.100 nhid 44 via 10.0.0.2 dev br500 table 500 proto bgp metric 20 onlink 
+    +8354.3 ms  leaf2  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 PROBE
+    +8354.4 ms  leaf2  45.0.0.100 dev br1000 lladdr 00:00:00:00:01:00 REACHABLE

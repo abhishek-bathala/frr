@@ -1,0 +1,568 @@
+{
+  "settings": {
+    "gaps_s": [
+      0.0
+    ],
+    "repeats": 10,
+    "window_s": 8.0,
+    "budget_ms": 100.0
+  },
+  "baseline": {
+    "instructions": 77,
+    "missed": 0,
+    "first_fail": null,
+    "recovered_at": null
+  },
+  "trials": [
+    {
+      "no": 1,
+      "gap": 0.0,
+      "t_break": 1794427488.3366842,
+      "t_make": 1794427488.4250247,
+      "gap_actual_ms": 88.34052085876465,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 1,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 1,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 1,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 1,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 77,
+      "missed": 1,
+      "first_fail": 1794427488.354818,
+      "recovered_at": 1794427488.450924,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 21.668672561645508,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 201.68066024780273,
+        "leaf5 withdrew the robot /32": 224.51186180114746,
+        "leaf2 learned the robot MAC (robot connected)": 111.88387870788574,
+        "leaf2 learned the robot IP from ARP": 250.03886222839355,
+        "leaf3 points the robot MAC at leaf2": 277.05979347229004,
+        "leaf1 points the robot MAC at leaf2": 277.0206928253174,
+        "leaf5 routes the robot /32 to leaf2": 447.59678840637207
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 96.10581398010254,
+      "after_make_ms": 25.899171829223633,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial1_gap0.0s.txt"
+    },
+    {
+      "no": 2,
+      "gap": 0.0,
+      "t_break": 1794427502.0746634,
+      "t_make": 1794427502.2490873,
+      "gap_actual_ms": 174.4239330291748,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 2,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 78,
+      "missed": 2,
+      "first_fail": 1794427502.118539,
+      "recovered_at": 1794427502.330986,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 37.462711334228516,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 256.8356990814209,
+        "leaf5 withdrew the robot /32": 287.65249252319336,
+        "leaf2 learned the robot MAC (robot connected)": 235.69560050964355,
+        "leaf2 learned the robot IP from ARP": 279.01268005371094,
+        "leaf3 points the robot MAC at leaf2": 416.10169410705566,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 474.63154792785645
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 212.446928024292,
+      "after_make_ms": 81.89868927001953,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial2_gap0.0s.txt"
+    },
+    {
+      "no": 3,
+      "gap": 0.0,
+      "t_break": 1794427516.2822216,
+      "t_make": 1794427516.4852264,
+      "gap_actual_ms": 203.0048370361328,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 2,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 76,
+      "missed": 2,
+      "first_fail": 1794427516.314328,
+      "recovered_at": 1794427516.55724,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 44.60644721984863,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 220.29447555541992,
+        "leaf5 withdrew the robot /32": 277.0504951477051,
+        "leaf2 learned the robot MAC (robot connected)": 228.35850715637207,
+        "leaf2 learned the robot IP from ARP": 283.9963436126709,
+        "leaf3 points the robot MAC at leaf2": 365.48852920532227,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 464.2465114593506
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 242.91205406188965,
+      "after_make_ms": 72.01361656188965,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial3_gap0.0s.txt"
+    },
+    {
+      "no": 4,
+      "gap": 0.0,
+      "t_break": 1794427530.4774966,
+      "t_make": 1794427530.752969,
+      "gap_actual_ms": 275.47240257263184,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 2,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 77,
+      "missed": 2,
+      "first_fail": 1794427530.484492,
+      "recovered_at": 1794427530.769835,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 6.754398345947266,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 203.87625694274902,
+        "leaf5 withdrew the robot /32": 234.26342010498047,
+        "leaf2 learned the robot MAC (robot connected)": 303.4074306488037,
+        "leaf2 learned the robot IP from ARP": 383.7153911590576,
+        "leaf3 points the robot MAC at leaf2": 536.5762710571289,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 660.975456237793
+      },
+      "withdrawn_before_make": true,
+      "outage_ms": 285.3429317474365,
+      "after_make_ms": 16.865968704223633,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial4_gap0.0s.txt"
+    },
+    {
+      "no": 5,
+      "gap": 0.0,
+      "t_break": 1794427544.228991,
+      "t_make": 1794427544.477127,
+      "gap_actual_ms": 248.13604354858398,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 2,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 79,
+      "missed": 3,
+      "first_fail": 1794427544.274881,
+      "recovered_at": 1794427544.621358,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 50.035953521728516,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 225.67987442016602,
+        "leaf5 withdrew the robot /32": 350.6779670715332,
+        "leaf2 learned the robot MAC (robot connected)": 368.29686164855957,
+        "leaf2 learned the robot IP from ARP": 368.3500289916992,
+        "leaf3 points the robot MAC at leaf2": 535.6900691986084,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 579.6599388122559
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 346.4770317077637,
+      "after_make_ms": 144.23084259033203,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial5_gap0.0s.txt"
+    },
+    {
+      "no": 6,
+      "gap": 0.0,
+      "t_break": 1794427561.242664,
+      "t_make": 1794427561.349852,
+      "gap_actual_ms": 107.18798637390137,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 2,
+          "remoteSequence": 3,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 3,
+          "remoteSequence": 2,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 3,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 3,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 78,
+      "missed": 1,
+      "first_fail": 1794427561.274945,
+      "recovered_at": 1794427561.38501,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 22.52984046936035,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 192.92783737182617,
+        "leaf5 withdrew the robot /32": 219.88987922668457,
+        "leaf2 learned the robot MAC (robot connected)": 123.62480163574219,
+        "leaf2 learned the robot IP from ARP": 236.5128993988037,
+        "leaf3 points the robot MAC at leaf2": 281.88300132751465,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 441.09201431274414
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 110.06498336791992,
+      "after_make_ms": 35.15791893005371,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial6_gap0.0s.txt"
+    },
+    {
+      "no": 7,
+      "gap": 0.0,
+      "t_break": 1794427576.0526173,
+      "t_make": 1794427576.1371188,
+      "gap_actual_ms": 84.50150489807129,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 4,
+          "remoteSequence": 5,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 5,
+          "remoteSequence": 4,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 5,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 5,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 76,
+      "missed": 1,
+      "first_fail": 1794427576.06584,
+      "recovered_at": 1794427576.190295,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 6.981611251831055,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 205.71374893188477,
+        "leaf5 withdrew the robot /32": 238.43669891357422,
+        "leaf2 learned the robot MAC (robot connected)": 119.87662315368652,
+        "leaf2 learned the robot IP from ARP": 261.5487575531006,
+        "leaf3 points the robot MAC at leaf2": 306.66375160217285,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 507.8246593475342
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 124.45497512817383,
+      "after_make_ms": 53.176164627075195,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial7_gap0.0s.txt"
+    },
+    {
+      "no": 8,
+      "gap": 0.0,
+      "t_break": 1794427589.9149709,
+      "t_make": 1794427590.139225,
+      "gap_actual_ms": 224.25413131713867,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 6,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 79,
+      "missed": 2,
+      "first_fail": 1794427589.961426,
+      "recovered_at": 1794427590.172497,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 41.88418388366699,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 232.43212699890137,
+        "leaf5 withdrew the robot /32": 315.4110908508301,
+        "leaf2 learned the robot MAC (robot connected)": 274.78814125061035,
+        "leaf2 learned the robot IP from ARP": 274.7490406036377,
+        "leaf3 points the robot MAC at leaf2": 455.7461738586426,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 511.9950771331787
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 211.07101440429688,
+      "after_make_ms": 33.27202796936035,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial8_gap0.0s.txt"
+    },
+    {
+      "no": 9,
+      "gap": 0.0,
+      "t_break": 1794427605.8652124,
+      "t_make": 1794427605.9970307,
+      "gap_actual_ms": 131.81829452514648,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 6,
+          "remoteSequence": 7,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 7,
+          "remoteSequence": 6,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 7,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 7,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 76,
+      "missed": 2,
+      "first_fail": 1794427605.878039,
+      "recovered_at": 1794427606.101838,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 7.036447525024414,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 224.29847717285156,
+        "leaf5 withdrew the robot /32": 248.73661994934082,
+        "leaf2 learned the robot MAC (robot connected)": 178.36356163024902,
+        "leaf2 learned the robot IP from ARP": 248.48556518554688,
+        "leaf3 points the robot MAC at leaf2": 339.4646644592285,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 489.1674518585205
+      },
+      "withdrawn_before_make": false,
+      "outage_ms": 223.7992286682129,
+      "after_make_ms": 104.80737686157227,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial9_gap0.0s.txt"
+    },
+    {
+      "no": 10,
+      "gap": 0.0,
+      "t_break": 1794427621.4642627,
+      "t_make": 1794427621.721453,
+      "gap_actual_ms": 257.1902275085449,
+      "evpn": {
+        "leaf1": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 8,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf2": {
+          "type": "local",
+          "remoteVtep": null,
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf3": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        },
+        "leaf4": {
+          "type": "remote",
+          "remoteVtep": "10.0.0.2",
+          "localSequence": 0,
+          "remoteSequence": 0,
+          "isDuplicate": false
+        }
+      },
+      "instructions": 78,
+      "missed": 3,
+      "first_fail": 1794427621.478205,
+      "recovered_at": 1794427621.754903,
+      "milestones_ms": {
+        "leaf1 flushed the robot MAC (cable unplugged)": 6.143331527709961,
+        "leaf3 removed the robot MAC (EVPN withdraw from leaf1)": 258.66127014160156,
+        "leaf5 withdrew the robot /32": 254.49419021606445,
+        "leaf2 learned the robot MAC (robot connected)": 301.1622428894043,
+        "leaf2 learned the robot IP from ARP": 375.7753372192383,
+        "leaf3 points the robot MAC at leaf2": 541.6233539581299,
+        "leaf1 points the robot MAC at leaf2": null,
+        "leaf5 routes the robot /32 to leaf2": 632.5621604919434
+      },
+      "withdrawn_before_make": true,
+      "outage_ms": 276.69811248779297,
+      "after_make_ms": 33.45012664794922,
+      "file": "/tmp/topotests/bgp_evpn_capstone.test_evpn_capstone_break_before_make/break_before_make/trial10_gap0.0s.txt"
+    }
+  ]
+}

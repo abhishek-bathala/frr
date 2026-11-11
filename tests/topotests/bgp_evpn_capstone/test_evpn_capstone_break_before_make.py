@@ -20,11 +20,18 @@ access ports stay up and bridged; the robot's own interfaces model its radio:
   * break: the robot's link to leaf1 goes down, so leaf1 sees the cable
     unplug, flushes the robot's MAC and EVPN withdraws it.
   * gap:   the robot is connected to neither leaf.
-  * make:  the robot's link to leaf2 comes up and it pings its gateway, so
-    leaf2 learns its MAC and IP (ARP) and advertises them.
+  * make:  the robot's link to leaf2 comes up and it sends one ARP for its
+    gateway straight away, so leaf2 learns its MAC and IP and advertises them.
+
+A switch agent already running on the robot does this with one "ip -batch"
+call and sends the ARP itself, so a 0 s gap takes only a few milliseconds:
+the robot reaches leaf2 before leaf1's EVPN withdraw does, and EVPN treats it
+as a move (the MAC-mobility sequence number goes up).
 
 Each trial moves the robot leaf1 -> leaf2 with one gap length, then puts it
-back on leaf1 (not measured) for the next trial.
+back on leaf1 (not measured) for the next trial. By default every trial uses
+a 0 s gap and the test runs 10 of them, so the summary shows how consistent
+the move is (min, median and max of each measurement per gap).
 
 What each trial records:
 
@@ -37,20 +44,23 @@ What each trial records:
     IP, /32 route) is timestamped by the kernel. No vtysh polling runs during
     a trial.
   * EVPN state at the end of the trial: MAC-mobility sequence numbers and the
-    duplicate-address flag on each leaf.
+    duplicate-address flag on each leaf. The flags are not cleared between
+    trials, so repeated moves show up if they trip FRR's limit.
 
 Evidence, written to <logdir>/break_before_make/:
   trial<N>_gap<G>s.txt   timeline of the trial, missed instructions, raw
                          kernel events and EVPN state
   <leaf>_ip.log, <leaf>_fdb.log   raw monitor output for the whole run
   results.json           all measurements
+  summary.txt            the per-trial table and min/median/max per gap
 
 The test collects data; it only fails if the fabric itself is broken (lost
 instructions while the robot stands still) or no probes were sent.
 
 Environment variables:
-  BBM_GAPS        comma-separated gap lengths in seconds (default 0,0.5,1,3)
-  BBM_REPEATS     trials per gap (default 1)
+  BBM_GAPS        comma-separated gap lengths in seconds (default 0: the
+                  robot connects to leaf2 as soon as it has dropped leaf1)
+  BBM_REPEATS     trials per gap (default 10, to see how consistent it is)
   BBM_WINDOW      seconds observed after the robot connects to leaf2 (default 8)
   BBM_BUDGET_MS   instruction deadline in ms (default 100)
   BBM_BASELINE    seconds of instructions with no moves (default 10)
@@ -58,11 +68,16 @@ Environment variables:
 
 import json
 import os
+import queue
 import re
+import shutil
+import statistics
 import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 import pytest
@@ -123,8 +138,8 @@ def _env_float(name, default):
     return float(os.environ.get(name, default))
 
 
-GAPS = [float(g) for g in os.environ.get("BBM_GAPS", "0,0.5,1,3").split(",")]
-REPEATS = int(os.environ.get("BBM_REPEATS", "1"))
+GAPS = [float(g) for g in os.environ.get("BBM_GAPS", "0").split(",")]
+REPEATS = int(os.environ.get("BBM_REPEATS", "10"))
 WINDOW = _env_float("BBM_WINDOW", "8")
 BUDGET = _env_float("BBM_BUDGET_MS", "100") / 1000.0
 BASELINE = _env_float("BBM_BASELINE", "10")
@@ -135,6 +150,8 @@ TRAFFIC_PORT = 5555
 TRAFFIC_SCRIPT = os.path.join(CWD, "robot_traffic.py")
 # Helpers run under "timeout" so they exit on their own inside the namespace.
 RUN_SECONDS = 1800
+
+VISUALIZER_URL = os.environ.get("VISUALIZER_URL", "http://127.0.0.1:5000")
 
 # Shared between the tests in this module.
 STATE = {"trials": []}
@@ -164,6 +181,109 @@ def _ok(rtt):
 def _iface(leaf):
     "The robot's interface toward leaf."
     return "eth-{}".format(leaf)
+
+
+#
+# Visualizer
+#
+
+
+class _Viz:
+    "Best-effort visualizer client; posts from a background thread."
+
+    def __init__(self):
+        self.enabled = False
+        self.events = queue.Queue()
+
+    def _post(self, event):
+        req = urllib.request.Request(
+            VISUALIZER_URL + "/event",
+            data=json.dumps(event).encode(),
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            urllib.request.urlopen(req, timeout=1).close()
+            return True
+        except (urllib.error.URLError, OSError):
+            return False
+
+    def _run(self):
+        while True:
+            self._post(self.events.get())
+
+    def start(self):
+        if not self._post({"action": "RESET"}):
+            logger.info("Visualizer not reachable at %s, skipping", VISUALIZER_URL)
+            return False
+        self.enabled = True
+        threading.Thread(target=self._run, daemon=True).start()
+        return True
+
+    def send(self, event):
+        if self.enabled:
+            self.events.put(event)
+
+    def log(self, msg, level="info"):
+        self.send({"action": "LOG", "text": msg, "level": level})
+
+    def link(self, leaf, up):
+        self.send({"action": "ADD_LINK" if up else "DEL_LINK",
+                   "source": leaf, "target": ROBOT["name"]})
+
+
+VIZ = _Viz()
+
+
+def _viz_publish_topology(tgen):
+    "Send the fabric nodes, links and configs to the visualizer."
+    for spine in SPINES:
+        VIZ.send({"action": "ADD_NODE", "id": spine, "type": "spine"})
+    for leaf, spec in LEAVES.items():
+        VIZ.send({"action": "ADD_NODE", "id": leaf, "type": "vtep"})
+        for host in spec["hosts"]:
+            VIZ.send({"action": "ADD_NODE", "id": host, "type": "host"})
+    VIZ.send({"action": "ADD_NODE", "id": ROBOT["name"], "type": "host"})
+    for spine in SPINES:
+        for leaf in LEAVES:
+            VIZ.send({"action": "ADD_LINK", "source": spine, "target": leaf})
+    for leaf, spec in LEAVES.items():
+        for host in spec["hosts"]:
+            VIZ.send({"action": "ADD_LINK", "source": leaf, "target": host})
+    VIZ.link(ROBOT["from"], True)
+    for rname, router in tgen.routers().items():
+        VIZ.send({"action": "NODE_CONFIG", "id": rname,
+                  "config": router.vtysh_cmd("show running-config")})
+
+
+def _show_leaf(leaf):
+    """Label a leaf with where it thinks the robot is: green-blue when right,
+    orange when it points at a leaf the robot has left, grey when it has
+    forgotten the robot."""
+    view, where = STATE["views"].get(leaf), STATE.get("robot_at")
+    if view is None:
+        status, note = "none", "no /32 (subnet route)" if leaf == "leaf5" else "no entry"
+    else:
+        right = (leaf == where) if view == "local" else (view == where)
+        status = "ok" if right else "stale"
+        note = "local" if view == "local" else (
+            "/32 -> {}" if leaf == "leaf5" else "-> {}").format(view)
+    VIZ.send({"action": "NODE_STATUS", "id": leaf, "status": status, "note": note})
+
+
+def _refresh_leaves():
+    for leaf in LEAVES:
+        _show_leaf(leaf)
+
+
+def _on_event(event):
+    "Track each leaf's view of the robot from the monitors, and show it."
+    leaf, views = event["leaf"], STATE["views"]
+    if event["kind"] == "fdb" or (leaf == "leaf5" and event["kind"] == "route"):
+        if not event["deleted"]:
+            views[leaf] = event["where"]
+        elif views.get(leaf) == event["where"]:
+            views[leaf] = None
+        _show_leaf(leaf)
 
 
 #
@@ -247,6 +367,9 @@ def setup_module(mod):
     "Sets up the pytest environment"
     tgen = Topogen(build_topo, mod.__name__)
     tgen.start_topology()
+    # Start each run with an empty evidence folder, so no trial files from
+    # an earlier run with other gaps are left mixed in.
+    shutil.rmtree(_evidence_dir(), ignore_errors=True)
 
     for leaf, spec in LEAVES.items():
         logger.info("Programming EVPN dataplane on %s", leaf)
@@ -349,6 +472,7 @@ class _Monitors:
                     event.update({"t": t, "leaf": leaf, "raw": line})
                     with self.lock:
                         self.events.append(event)
+                    _on_event(event)
 
     def start(self):
         for leaf in LEAVES:
@@ -374,12 +498,18 @@ class _Monitors:
 
 
 class _Stream:
-    "The controller's probe stream, read live from the helper's output."
+    """The controller's probe stream, read live from the helper's output.
+
+    Each instruction is drawn in the visualizer once its deadline passes:
+    green to the robot if delivered, red to where leaf5 sent it if missed.
+    """
 
     def __init__(self, tgen):
         self.lock = threading.Lock()
         self.sent = {}
         self.recv = {}
+        self.pending = []
+        self.counts = {"delivered": 0, "missed": 0}
         self.proc = tgen.net[CONTROLLER].popen(
             ["timeout", str(RUN_SECONDS), "python3", "-u", TRAFFIC_SCRIPT, "stream",
              "--target", ROBOT["addr"], "--port", str(TRAFFIC_PORT),
@@ -389,16 +519,36 @@ class _Stream:
         STATE.setdefault("procs", []).append(self.proc)
         threading.Thread(target=self._reader, daemon=True).start()
 
+    def _judge(self, now):
+        while self.pending and now > self.sent[self.pending[0]] + BUDGET:
+            seq = self.pending.pop(0)
+            if _ok(self.recv[seq] - self.sent[seq] if seq in self.recv else None):
+                self.counts["delivered"] += 1
+                VIZ.send({"action": "PACKET_FLOW", "packet_type": "REACH",
+                          "source": CONTROLLER, "target": ROBOT["name"],
+                          "vm": ROBOT["name"]})
+            else:
+                self.counts["missed"] += 1
+                VIZ.send({"action": "PACKET_FLOW", "packet_type": "UNREACH",
+                          "source": CONTROLLER,
+                          "target": STATE["views"].get("leaf5") or "leaf5",
+                          "vm": ROBOT["name"]})
+            VIZ.send(dict(self.counts, action="STREAM_STATS"))
+
     def _reader(self):
         for raw in self.proc.stdout:
             parts = _text(raw).split()
             if len(parts) != 3:
                 continue
+            seq = int(parts[1])
             with self.lock:
                 if parts[0] == "S":
-                    self.sent[int(parts[1])] = float(parts[2])
+                    self.sent[seq] = float(parts[2])
+                    if seq % INSTRUCTION_EVERY == 0:
+                        self.pending.append(seq)
                 elif parts[0] == "R":
-                    self.recv.setdefault(int(parts[1]), float(parts[2]))
+                    self.recv.setdefault(seq, float(parts[2]))
+                self._judge(time.time())
 
     def probes(self, t_from, t_to):
         "Return [(seq, t_send, rtt or None)] for probes sent in [t_from, t_to)."
@@ -493,29 +643,59 @@ def _robot_cmd(tgen, cmds):
     return float(out.split()[0])
 
 
-def _break(tgen):
+def _agent(line, tag):
+    "Send one command to the robot's switch agent; return the times it reports."
+    agent = STATE["agent"]
+    try:
+        agent.stdin.write(line + "\n")
+    except TypeError:
+        agent.stdin.write((line + "\n").encode())
+    agent.stdin.flush()
+    while True:
+        reply = _text(agent.stdout.readline())
+        assert reply, "robot switch agent exited"
+        if reply.startswith(tag + " "):
+            return [float(v) for v in reply.split()[1:]]
+        logger.info("robot agent: %s", reply.rstrip())
+
+
+def _break():
     "The robot drops its link to leaf1; the IP waits on the (down) leaf2 link."
-    src, dst = _iface(ROBOT["from"]), _iface(ROBOT["to"])
-    return _robot_cmd(tgen, [
-        "ip link set {} down".format(src),
-        "ip addr flush dev {}".format(src),
-        "ip neigh flush dev {}".format(dst),
-        "ip addr replace {} dev {}".format(ROBOT["ip"], dst),
-    ])
+    return _agent("break {} {} {}".format(
+        _iface(ROBOT["from"]), _iface(ROBOT["to"]), ROBOT["ip"]), "B")[0]
 
 
-def _make(tgen):
-    "The robot's link to leaf2 comes up and it pings its gateway (one ARP)."
-    dst = _iface(ROBOT["to"])
-    return _robot_cmd(tgen, [
-        "ip link set {} up".format(dst),
-        "ip route replace default via {} dev {}".format(ROBOT["gw"], dst),
-        "{{ ping -c 1 -W 1 {} > /dev/null; true; }}".format(ROBOT["gw"]),
-    ])
+def _make():
+    """The robot's link to leaf2 comes up and it sends one ARP for its gateway
+    straight away. Return (t_make, t_arp)."""
+    return tuple(_agent("make {} {} {}".format(
+        _iface(ROBOT["to"]), ROBOT["ip"], ROBOT["gw"]), "M"))
+
+
+def _move():
+    """Break and make in one "ip -batch" call (a 0 s gap), then ARP at once.
+    Return (t_break, t_make, t_arp)."""
+    return tuple(_agent("move {} {} {} {}".format(
+        _iface(ROBOT["from"]), _iface(ROBOT["to"]), ROBOT["ip"], ROBOT["gw"]), "V"))
+
+
+def _viz_trial_summary(trial):
+    "Log one trial's result and timeline in the visualizer."
+    VIZ.log("   outage {}, {} of {} instructions missed; leaf2 seq {}".format(
+        "{:.0f} ms".format(trial["outage_ms"]) if trial["outage_ms"] is not None
+        else "NOT RECOVERED", trial["missed"], trial["instructions"],
+        trial["evpn"][ROBOT["to"]]["localSequence"]), "bad" if trial["missed"] else "good")
+    steps = sorted((ms, name) for name, ms in trial["milestones_ms"].items() if ms is not None)
+    for ms, name in steps:
+        VIZ.log("   {:+6.0f} ms  {}".format(ms, name))
 
 
 def _return_home(tgen):
     "Put the robot back on leaf1 (not measured) and wait until it is settled."
+    VIZ.log("Robot returns to {} for the next trial (not measured)".format(ROBOT["from"]))
+    STATE["robot_at"] = None
+    VIZ.link(ROBOT["to"], False)
+    _refresh_leaves()
     src, dst = _iface(ROBOT["from"]), _iface(ROBOT["to"])
     _robot_cmd(tgen, [
         "ip link set {} down".format(dst),
@@ -525,6 +705,9 @@ def _return_home(tgen):
         "ip link set {} up".format(src),
         "ip route replace default via {} dev {}".format(ROBOT["gw"], src),
     ])
+    STATE["robot_at"] = ROBOT["from"]
+    VIZ.link(ROBOT["from"], True)
+    _refresh_leaves()
     robot = tgen.net[ROBOT["name"]]
 
     def _settled():
@@ -532,10 +715,10 @@ def _return_home(tgen):
         robot.cmd("ip neigh flush dev {}; ping -c 1 -W 1 {}".format(src, ROBOT["gw"]))
         return _robot_at(tgen, ROBOT["from"])
 
+    # Duplicate-address flags are left alone, so repeated moves show up in
+    # the data if they trip FRR's limit (5 moves in 180 s by default).
     _, result = topotest.run_and_expect(_settled, None, count=30, wait=1)
     assert result is None, "Robot did not settle back on leaf1: {}".format(result)
-    for leaf in L2_LEAVES:
-        tgen.gears[leaf].vtysh_cmd("clear evpn dup-addr vni all")
     check_ping(CONTROLLER, ROBOT["addr"], True, count=20, wait=1)
     time.sleep(3)
 
@@ -547,7 +730,7 @@ def _first(events, test, after=0.0):
     return None
 
 
-def _milestones(events, t_break, t_make):
+def _milestones(events, t_break):
     "Return [(name, event or None)] for the key control-plane steps of a trial."
     src, dst = ROBOT["from"], ROBOT["to"]
 
@@ -568,16 +751,16 @@ def _milestones(events, t_break, t_make):
         ("leaf5 withdrew the robot /32".format(),
          _first(events, route5(True), t_break)),
         ("{} learned the robot MAC (robot connected)".format(dst),
-         _first(events, fdb(dst, "local", False), t_make)),
+         _first(events, fdb(dst, "local", False), t_break)),
         ("{} learned the robot IP from ARP".format(dst),
          _first(events, lambda e: (e["leaf"] == dst and e["kind"] == "neigh"
-                                   and e["state"] == "local" and not e["deleted"]), t_make)),
+                                   and e["state"] == "local" and not e["deleted"]), t_break)),
         ("leaf3 points the robot MAC at {}".format(dst),
-         _first(events, fdb("leaf3", dst, False), t_make)),
+         _first(events, fdb("leaf3", dst, False), t_break)),
         ("{} points the robot MAC at {}".format(src, dst),
-         _first(events, fdb(src, dst, False), t_make)),
+         _first(events, fdb(src, dst, False), t_break)),
         ("leaf5 routes the robot /32 to {}".format(dst),
-         _first(events, route5(False, dst), t_make)),
+         _first(events, route5(False, dst), t_break)),
     ]
 
 
@@ -615,8 +798,8 @@ def _write_trial(trial, events, probes):
         "== Timeline",
     ]
     steps = [(t0, "robot", "drops its link to {} (break)".format(ROBOT["from"])),
-             (trial["t_make"], "robot", "link to {} up, pings its gateway (make)".format(
-                 ROBOT["to"]))]
+             (trial["t_make"], "robot", "link to {} up (make)".format(ROBOT["to"])),
+             (trial["t_arp"], "robot", "sent ARP for its gateway")]
     for name, e in trial["milestone_events"]:
         if e:
             steps.append((e["t"], e["leaf"], name))
@@ -683,6 +866,17 @@ def test_fabric_converged():
     check_ping(CONTROLLER, ROBOT["addr"], True, count=30, wait=1)
     _announce("Fabric up; robot {} on {}".format(ROBOT["name"], ROBOT["from"]))
 
+    # Converged: leaf1 owns the robot and every other leaf points at it.
+    STATE["robot_at"] = ROBOT["from"]
+    STATE["views"] = {leaf: ROBOT["from"] for leaf in LEAVES}
+    STATE["views"][ROBOT["from"]] = "local"
+    if VIZ.start():
+        _viz_publish_topology(tgen)
+        _refresh_leaves()
+        VIZ.log("Robot on {}. Leaves show where they think the robot is "
+                "(orange = stale, grey = forgotten).".format(ROBOT["from"]))
+        _announce("Publishing to visualizer at {}".format(VISUALIZER_URL))
+
     STATE["monitors"] = _Monitors(tgen)
     STATE["monitors"].start()
     STATE.setdefault("procs", []).append(robot.popen(
@@ -690,6 +884,11 @@ def test_fabric_converged():
          "--port", str(TRAFFIC_PORT)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     ))
+    STATE["agent"] = robot.popen(
+        ["timeout", str(RUN_SECONDS), "python3", "-u", TRAFFIC_SCRIPT, "agent"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    STATE["procs"].append(STATE["agent"])
     time.sleep(0.5)
 
 
@@ -701,12 +900,15 @@ def test_baseline_no_moves():
 
     STATE["stream"] = _Stream(tgen)
     t_start = time.time()
+    VIZ.log("Baseline: {:.0f} s of instructions with the robot standing still".format(BASELINE))
     time.sleep(BASELINE)
     # Skip the first second while the stream starts up.
     result = _analyze(STATE["stream"].probes(t_start + 1, time.time() - 1), t_start + 1)
     STATE["baseline"] = result
     _announce("Baseline: {} of {} instructions missed".format(
         result["missed"], result["instructions"]))
+    VIZ.log("Baseline: {} of {} instructions missed".format(
+        result["missed"], result["instructions"]), "good" if not result["missed"] else "bad")
     assert result["instructions"] > 0, "No probes were sent"
     assert result["missed"] == 0, (
         "Instructions were missed with the robot standing still, so the fabric "
@@ -724,19 +926,34 @@ def test_break_before_make_moves():
     for gap in GAPS:
         for _ in range(REPEATS):
             no += 1
-            t_break = _break(tgen)
-            time.sleep(max(0.0, t_break + gap - time.time()))
-            t_make = _make(tgen)
+            VIZ.log("Trial {}: robot drops {} and stays offline {} s".format(
+                no, ROBOT["from"], gap), "warn")
+            STATE["robot_at"] = None
+            VIZ.link(ROBOT["from"], False)
+            _refresh_leaves()
+            if gap > 0:
+                t_break = _break()
+                time.sleep(max(0.0, t_break + gap - time.time()))
+            STATE["robot_at"] = ROBOT["to"]
+            VIZ.link(ROBOT["to"], True)
+            _refresh_leaves()
+            VIZ.log("   robot connects to {}".format(ROBOT["to"]), "warn")
+            if gap > 0:
+                t_make, t_arp = _make()
+            else:
+                t_break, t_make, t_arp = _move()
             time.sleep(max(0.0, t_make + WINDOW - time.time()))
             t_end = time.time()
             evpn = _evpn_state(tgen)
 
             events = monitors.between(t_break - 0.05, t_end)
-            probes = stream.probes(t_break - 0.5, t_end)
+            # Leave out probes still in flight when the window closed.
+            probes = stream.probes(t_break - 0.5, t_end - BUDGET - 0.05)
             trial = {"no": no, "gap": gap, "t_break": t_break, "t_make": t_make,
-                     "gap_actual_ms": (t_make - t_break) * 1000, "evpn": evpn}
+                     "t_arp": t_arp, "gap_actual_ms": (t_make - t_break) * 1000,
+                     "evpn": evpn}
             trial.update(_analyze(probes, t_break))
-            trial["milestone_events"] = _milestones(events, t_break, t_make)
+            trial["milestone_events"] = _milestones(events, t_break)
             trial["milestones_ms"] = {
                 name: (e["t"] - t_break) * 1000 if e else None
                 for name, e in trial["milestone_events"]}
@@ -759,6 +976,7 @@ def test_break_before_make_moves():
                           trial["missed"], trial["instructions"],
                           evpn[ROBOT["to"]]["localSequence"],
                           [l for l, i in evpn.items() if i["isDuplicate"]] or "no"))
+            _viz_trial_summary(trial)
             _return_home(tgen)
 
     with open(os.path.join(_evidence_dir(), "results.json"), "w") as f:
@@ -796,8 +1014,53 @@ def test_break_before_make_summary():
             ms(t["after_make_ms"]), "{}/{}".format(t["missed"], t["instructions"]),
             t["evpn"][ROBOT["to"]]["localSequence"],
             ",".join(l for l, i in t["evpn"].items() if i["isDuplicate"]) or "no"))
-    _announce("Break-before-make trials (times in ms after the robot dropped leaf1)\n{}".format(
-        "\n".join(lines)))
+    table = "Break-before-make trials (times in ms after the robot dropped leaf1)\n{}".format(
+        "\n".join(lines))
+    _announce(table)
+
+    # How consistent is each gap: min / median / max over its trials.
+    stats = ["", "Consistency per gap (min / median / max over trials)"]
+    columns = [
+        ("actual gap ms", lambda t: t["gap_actual_ms"]),
+        ("/32 gone ms", lambda t: t["milestones_ms"][names["withdraw"]]),
+        ("leaf2 MAC ms", lambda t: t["milestones_ms"][names["mac"]]),
+        ("leaf2 IP ms", lambda t: t["milestones_ms"][names["ip"]]),
+        ("/32 back ms", lambda t: t["milestones_ms"][names["route"]]),
+        ("outage ms", lambda t: t["outage_ms"]),
+        ("after make ms", lambda t: t["after_make_ms"]),
+        ("missed instr", lambda t: t["missed"]),
+    ]
+    for gap in sorted(set(t["gap"] for t in STATE["trials"])):
+        trials = [t for t in STATE["trials"] if t["gap"] == gap]
+        stats.append("  gap {} s: {} trials, {} recovered; leaf2 sequence {}; "
+                     "duplicate flagged in {}".format(
+                         gap, len(trials),
+                         sum(1 for t in trials if t["outage_ms"] is not None),
+                         ", ".join("{}: {}x".format(seq, n) for seq, n in sorted(
+                             _count(t["evpn"][ROBOT["to"]]["localSequence"]
+                                    for t in trials).items(), key=lambda kv: str(kv[0]))),
+                         sum(1 for t in trials
+                             if any(i["isDuplicate"] for i in t["evpn"].values()))))
+        for label, get in columns:
+            values = sorted(v for v in (get(t) for t in trials) if v is not None)
+            if values:
+                stats.append("    {:14} {:>7} / {:>7} / {:>7}".format(
+                    label, ms(values[0]), ms(statistics.median(values)), ms(values[-1])))
+            else:
+                stats.append("    {:14} never seen".format(label))
+    _announce("\n".join(stats))
+    with open(os.path.join(_evidence_dir(), "summary.txt"), "w") as f:
+        f.write(table + "\n" + "\n".join(stats) + "\n")
+    VIZ.log("Summary of {} trials written to summary.txt".format(len(STATE["trials"])), "warn")
+    for line in stats[1:]:
+        VIZ.log(line)
+
+
+def _count(values):
+    counts = {}
+    for v in values:
+        counts[v] = counts.get(v, 0) + 1
+    return counts
 
 
 if __name__ == "__main__":

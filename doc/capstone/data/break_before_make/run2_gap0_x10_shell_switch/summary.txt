@@ -1,0 +1,23 @@
+Break-before-make trials (times in ms after the robot dropped leaf1)
+  gap_s  gap_ms  /32_gone  leaf2_mac  leaf2_ip  /32_back  outage_ms  after_make_ms  missed  leaf2_seq  dup
+    0.0      88       225        112       250       448         96             26    1/77          1  no
+    0.0     174       288        236       279       475        212             82    2/78          0  no
+    0.0     203       277        228       284       464        243             72    2/76          0  no
+    0.0     275       234        303       384       661        285             17    2/77          0  no
+    0.0     248       351        368       368       580        346            144    3/79          0  no
+    0.0     107       220        124       237       441        110             35    1/78          3  no
+    0.0      85       238        120       262       508        124             53    1/76          5  no
+    0.0     224       315        275       275       512        211             33    2/79          0  no
+    0.0     132       249        178       248       489        224            105    2/76          7  no
+    0.0     257       254        301       376       633        277             33    3/78          0  no
+
+Consistency per gap (min / median / max over trials)
+  gap 0.0 s: 10 trials, 10 recovered; leaf2 sequence 0: 6x, 1: 1x, 3: 1x, 5: 1x, 7: 1x; duplicate flagged in 0
+    actual gap ms       85 /     189 /     275
+    /32 gone ms        220 /     252 /     351
+    leaf2 MAC ms       112 /     232 /     368
+    leaf2 IP ms        237 /     277 /     384
+    /32 back ms        441 /     498 /     661
+    outage ms           96 /     218 /     346
+    after make ms       17 /      44 /     144
+    missed instr         1 /       2 /       3
