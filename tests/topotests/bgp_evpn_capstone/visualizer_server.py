@@ -64,7 +64,8 @@ def receive_event():
     if isinstance(data, dict):
         if data.get('action') == 'RESET':
             event_history.clear()
-        elif data.get('action') not in ('PACKET_FLOW', 'ROUTE_SAMPLE', 'ROUTE_SAMPLE_RESET'):
+        elif data.get('action') not in ('PACKET_FLOW', 'ROUTE_SAMPLE', 'ROUTE_SAMPLE_RESET',
+                                        'STREAM_STATS', 'REPLAY_CLOCK'):
             event_history.append(data)
 
     # emit one Socket.IO event named `network_event` to every connected client.

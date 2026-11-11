@@ -35,6 +35,10 @@
 
         .packet-dot.reach { background: #39d353; }
         .packet-dot.unreach { background: #ff5a66; }
+        .packet-dot.update { background: #ffd84d; }
+
+        /* slow-motion replay clock (REPLAY_CLOCK events), top centre */
+        #replay-clock { display: none; position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 10; background: rgba(0,0,0,0.8); border: 1px solid #ffb347; border-radius: 8px; padding: 8px 14px; color: #ffb347; font: bold 16px monospace; }
 
         #packet-controls {
             margin-top: 10px;
@@ -51,6 +55,13 @@
         #config-panel header { display: flex; justify-content: space-between; align-items: center; }
         #config-panel pre { flex: 1; overflow: auto; margin: 10px 0 0; font-size: 12px; white-space: pre; }
         #config-close { background: none; border: 1px solid #666; color: white; cursor: pointer; border-radius: 4px; }
+
+        /* move timeline log (LOG events), bottom-left */
+        #event-log { display: none; position: absolute; left: 10px; bottom: 10px; z-index: 10; width: 44vw; max-height: 38vh; overflow-y: auto; background: rgba(0,0,0,0.8); border: 1px solid #333; border-radius: 8px; padding: 10px; box-sizing: border-box; font: 12px monospace; white-space: pre-wrap; }
+        #event-log .good { color: #39d353; }
+        #event-log .bad { color: #ff5a66; }
+        #event-log .warn { color: #ffb347; }
+        #stream-stats { margin-top: 8px; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -66,8 +77,19 @@
             <strong>Packet Overlay</strong>
             <div class="toggle-row"><input type="checkbox" id="toggle-reach" checked><label for="toggle-reach">Show REACH</label></div>
             <div class="toggle-row"><input type="checkbox" id="toggle-unreach" checked><label for="toggle-unreach">Show UNREACH</label></div>
+            <div id="stream-stats"></div>
+            <div id="move-legend" style="display: none; margin-top: 8px;">
+                Dots: <span style="color: #39d353;">&#9679;</span> delivered
+                <span style="color: #ff5a66;">&#9679;</span> missed
+                <span style="color: #ffd84d;">&#9679;</span> EVPN update<br>
+                Leaves: <span style="color: #ff9f1a;">&#9679;</span> stale
+                <span style="color: #777777;">&#9679;</span> no entry
+            </div>
         </div>
     </div>
+
+    <div id="event-log"></div>
+    <div id="replay-clock"></div>
 
     <!-- container element where vis-network renders the topology graph -->
     <div id="mynetwork"></div>
@@ -291,7 +313,11 @@
         }
 
         function packetStyleClass(packetType) {
-            return String(packetType || '').toUpperCase() === 'UNREACH' ? 'unreach' : 'reach';
+            var normalized = String(packetType || '').toUpperCase();
+            if (normalized === 'UNREACH') {
+                return 'unreach';
+            }
+            return normalized === 'UPDATE' ? 'update' : 'reach';
         }
 
         function getNodeDomPoint(nodeId) {
@@ -524,10 +550,62 @@
             }
         });
 
+        var eventLog = document.getElementById('event-log');
+        var streamStats = document.getElementById('stream-stats');
+        var nodeBaseColor = new Map();
+        var STATUS_COLOR = { stale: '#ff9f1a', none: '#777777', flood: '#b77dff' };
+
+        // NODE_STATUS: show what a node believes (e.g. where a leaf thinks
+        // the robot is) under its name; stale and missing views get a color.
+        function setNodeStatus(msg) {
+            var node = nodes.get(msg.id);
+            if (!node) {
+                return;
+            }
+            var background = STATUS_COLOR[msg.status] || nodeBaseColor.get(msg.id);
+            nodes.update({
+                id: msg.id,
+                label: msg.note ? msg.id + '\n' + msg.note : msg.id,
+                color: { background: background, border: '#ffffff' }
+            });
+        }
+
+        function appendLog(msg) {
+            var line = document.createElement('div');
+            line.className = msg.level || 'info';
+            line.textContent = msg.text;
+            eventLog.appendChild(line);
+            while (eventLog.childNodes.length > 300) {
+                eventLog.removeChild(eventLog.firstChild);
+            }
+            eventLog.style.display = 'block';
+            eventLog.scrollTop = eventLog.scrollHeight;
+        }
+
         var socket = io.connect('http://' + document.domain + ':' + location.port);
 
         socket.on('network_event', function(msg) {
-            if (msg.action === 'ADD_NODE') {
+            if (msg.action === 'RESET') {
+                eventLog.textContent = '';
+                eventLog.style.display = 'none';
+                streamStats.textContent = '';
+            }
+            else if (msg.action === 'NODE_STATUS') {
+                setNodeStatus(msg);
+            }
+            else if (msg.action === 'LOG') {
+                appendLog(msg);
+            }
+            else if (msg.action === 'STREAM_STATS') {
+                streamStats.textContent = 'Instructions: ' + msg.delivered + ' delivered, ' + msg.missed + ' missed';
+                document.getElementById('move-legend').style.display = 'block';
+            }
+            else if (msg.action === 'REPLAY_CLOCK') {
+                var clock = document.getElementById('replay-clock');
+                clock.textContent = msg.text;
+                clock.style.display = msg.text ? 'block' : 'none';
+            }
+            else if (msg.action === 'ADD_NODE') {
                 if (!nodes.get(msg.id)) {
                     let color, size, x, y;
                     
@@ -566,6 +644,7 @@
                         physics: false
                     });
                     nodeTypeById.set(msg.id, msg.type);
+                    nodeBaseColor.set(msg.id, color);
                     if (msg.type === 'spine' || msg.type === 'vtep' || msg.type === 'host') {
                         registerStaticNode(msg.id, msg.type);
                     }
