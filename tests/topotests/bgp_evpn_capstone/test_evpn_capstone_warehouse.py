@@ -22,6 +22,14 @@ The fabric is the original Capstone topology from test_evpn_capstone.py
 plays the warehouse controller, so instructions are routed across the L3VNI
 (VRF500), the same path a real robot's traffic would take.
 
+With WAREHOUSE_CONTROLLER=same-subnet, leaf5 also carries the robots' L2VNI
+1000 (layer 2 only, no SVI), and a second controller, ctrl45 (45.0.0.51),
+hangs off it in the robots' subnet. ctrl45's instructions are bridged to the
+robot by MAC address instead of routed by IP. ctrl45 is the controller the
+requirements are measured against; the routed controller keeps running a
+reference stream through the same moves, so both paths are compared in one
+run.
+
 Each leaf access port stands in for an access point (AP). host11 is cabled to
 two of them, and both stay bridged and up for the whole run, the way real APs
 stay up when a robot drives away:
@@ -37,7 +45,18 @@ the MAC while the old leaf still advertises it, and advertises a higher
 sequence number. After the switch, the robot sends one ping to its gateway to
 announce itself, as a roaming client sends a gratuitous ARP.
 
-Measurements:
+Roam modes (WAREHOUSE_ROAM_MODE):
+
+  * "silent" (default): the radio goes off at the old AP and the old leaf is
+    never told; its port stays up and it keeps the robot until EVPN reports
+    the move (make-before-break, RFC 7432 section 15).
+  * "bbm" (break-before-make): when the radio goes off, the old leaf also
+    drops the robot at once, as if the AP had reported the disassociation:
+    it deletes the robot's neighbor entry and bridge MAC, so zebra withdraws
+    the robot's routes. The radio comes on at the new AP after a gap. The
+    gap is taken from WAREHOUSE_ROAM_GAPS, one value per pair of moves, so
+    one run covers several gaps in both directions.
+
 
   * Data plane: warehouse_traffic.py sends a numbered UDP probe from the
     controller to the robot every 10 ms, and the robot echoes it back. Every
@@ -56,13 +75,24 @@ Measurements:
     limit is 5 moves in 180 s, so a robot moving 5 times per minute is
     expected to trip it.
 
+  * Roam evidence, per move: the actual gap, how long until every leaf had
+    dropped the old location, whether the new leaf still had the zebra
+    "NOARP" copy of the robot's IP when the robot arrived, how many probes
+    arrived at bystander leaves (leaf3/leaf4; counted with tc on their VXLAN
+    devices, split into bridged and routed), and how many BGP updates leaf3
+    received.
+
 Tests:
 
   1. test_fabric_converged: the fabric is up and the robot is on leaf1.
   2. test_baseline_instruction_stream: the instruction stream with no moves.
   3. test_sustained_mobility: the robot roams leaf1 <-> leaf2 at the target
      move rate while the stream runs.
-  4. test_requirements_verdict: prints a requirement-by-requirement table.
+  4. test_signal_dropouts: the robot's radio drops out briefly without moving,
+     WAREHOUSE_DROPOUTS times. In bbm mode the leaf treats each dropout as a
+     departure.
+  5. test_requirements_verdict: prints a requirement-by-requirement table
+     and the roam evidence summary.
      By default it reports only; set WAREHOUSE_ENFORCE=true to fail the test
      when a requirement is not met.
 
@@ -76,7 +106,14 @@ Environment variables:
   WAREHOUSE_DEADLINE             max instruction round trip, seconds (default 0.1)
   WAREHOUSE_PROBE_INTERVAL       seconds between probes (default 0.01)
   WAREHOUSE_BASELINE_SECONDS     length of the no-move baseline (default 20)
+  WAREHOUSE_ROAM_MODE            "silent" (default) or "bbm"; see above
   WAREHOUSE_ROAM_GAP             seconds the radio is off between APs (default 0)
+  WAREHOUSE_ROAM_GAPS            comma-separated gaps, one per pair of moves,
+                                 cycling (default "0,0.25,0.5,1,2" in bbm mode,
+                                 else WAREHOUSE_ROAM_GAP)
+  WAREHOUSE_DROPOUTS             signal dropouts in test_signal_dropouts
+                                 (default 3; 0 skips the test)
+  WAREHOUSE_DROPOUT_SECONDS      length of each dropout (default 0.5)
   WAREHOUSE_REARP_AFTER          if > 0, the robot ARPs for its gateway again
                                  this many seconds after each move (default 0)
   WAREHOUSE_TRACE_MOVE           move number to trace (default 0, off). For
@@ -90,6 +127,7 @@ Environment variables:
                                  which adds load while timing (default "true")
   WAREHOUSE_ENFORCE              "true" to fail on unmet requirements
                                  (default "false")
+  WAREHOUSE_CONTROLLER           "routed" (default) or "same-subnet"; see above
   CONVERGENCE_POLL_INTERVAL      seconds between vtysh checks per leaf (default 0.05)
 """
 
@@ -199,8 +237,33 @@ ROBOT = {
     "other_leaf": "leaf2",
     "ifaces": {"leaf1": "eth0", "leaf2": "eth-leaf2"},
 }
-CONTROLLER = "controller"
-CONTROLLER_ADDR = "20.0.0.51"
+CONTROLLER_MODE = os.environ.get("WAREHOUSE_CONTROLLER", "routed")
+assert CONTROLLER_MODE in ("routed", "same-subnet"), (
+    "WAREHOUSE_CONTROLLER must be 'routed' or 'same-subnet', not {!r}".format(
+        CONTROLLER_MODE)
+)
+SAME_SUBNET = CONTROLLER_MODE == "same-subnet"
+
+ROUTED_CONTROLLER = "controller"
+ROUTED_CONTROLLER_ADDR = "20.0.0.51"
+
+# Same-subnet mode: a controller in the robots' subnet, bridged on leaf5.
+LOCAL_CONTROLLER = {
+    "name": "ctrl45",
+    "ip": "45.0.0.51/24",
+    "addr": "45.0.0.51",
+    "mac": "00:00:00:00:00:52",
+    "leaf": "leaf5",
+    "l2br": "br1000",
+}
+
+# The controller the requirements are measured against.
+if SAME_SUBNET:
+    CONTROLLER = LOCAL_CONTROLLER["name"]
+    CONTROLLER_ADDR = LOCAL_CONTROLLER["addr"]
+else:
+    CONTROLLER = ROUTED_CONTROLLER
+    CONTROLLER_ADDR = ROUTED_CONTROLLER_ADDR
 
 TRAFFIC_SCRIPT = os.path.join(CWD, "warehouse_traffic.py")
 TRAFFIC_PORT = 5005
@@ -224,6 +287,19 @@ PROBE_INTERVAL = min(
 BASELINE_SECONDS = _env_float("WAREHOUSE_BASELINE_SECONDS", "20")
 ROAM_GAP = _env_float("WAREHOUSE_ROAM_GAP", "0")
 REARP_AFTER = _env_float("WAREHOUSE_REARP_AFTER", "0")
+ROAM_MODE = os.environ.get("WAREHOUSE_ROAM_MODE", "silent")
+assert ROAM_MODE in ("silent", "bbm"), (
+    "WAREHOUSE_ROAM_MODE must be 'silent' or 'bbm', not {!r}".format(ROAM_MODE)
+)
+BBM = ROAM_MODE == "bbm"
+ROAM_GAPS = [
+    float(gap) for gap in os.environ.get(
+        "WAREHOUSE_ROAM_GAPS", "0,0.25,0.5,1,2" if BBM else str(ROAM_GAP)
+    ).split(",")
+]
+DROPOUTS = int(os.environ.get("WAREHOUSE_DROPOUTS", "3"))
+DROPOUT_SECONDS = _env_float("WAREHOUSE_DROPOUT_SECONDS", "0.5")
+DROPOUT_SPACING = 8.0
 TRACE_MOVE = int(os.environ.get("WAREHOUSE_TRACE_MOVE", "0"))
 MAX_MISSED = int(os.environ.get("WAREHOUSE_MAX_MISSED", "0"))
 WATCH_CONTROL_PLANE = _env_bool("WAREHOUSE_WATCH_CONTROL_PLANE", "true")
@@ -238,6 +314,16 @@ PRE_ROLL = 3.0
 
 # tc filter priority used for the robot's "radio off" drop filters.
 RADIO_PREF = 10
+
+# Probe counters: a tc filter on each leaf's VXLAN devices counts probes for
+# the robot. VNI 1000 carries bridged probes, the L3VNI routed ones.
+COUNTER_PREF = 20
+COUNTER_DEVS = {"bridged": "vni{}".format(ROBOT["l2vni"]),
+                "routed": "vni{}".format(L3VNI)}
+# Both controllers sit behind leaf5, so its counters would count every probe.
+CONTROLLER_LEAF = "leaf5"
+# A leaf that is never the robot's AP, used to count BGP updates per move.
+CHURN_LEAF = "leaf3"
 
 RESULTS = {"config": {}, "baseline": None, "moves": [], "verdict": []}
 
@@ -296,6 +382,77 @@ def build_topo(tgen):
         ROBOT["ifaces"][other],
         "eth-{}".format(ROBOT["name"]),
     )
+
+    if SAME_SUBNET:
+        local = LOCAL_CONTROLLER
+        tgen.add_host(local["name"], local["ip"], "via {}".format(ROBOT["gw"]))
+        tgen.add_link(
+            tgen.gears[local["name"]],
+            tgen.gears[local["leaf"]],
+            "eth0",
+            "eth-{}".format(local["name"]),
+        )
+
+
+def _carries_robot_vni(leaf):
+    "Return True if leaf has the robots' L2VNI."
+    if SAME_SUBNET and leaf == LOCAL_CONTROLLER["leaf"]:
+        return True
+    return LEAVES[leaf]["l2vni"] == ROBOT["l2vni"]
+
+
+def _setup_local_controller_dataplane(tgen):
+    """Same-subnet mode: add the robots' L2VNI to leaf5, layer 2 only.
+
+    There is no SVI, so leaf5 does not route for 45.0.0.0/24 and the routed
+    controller's path is the same as in the default mode.
+    """
+    local = LOCAL_CONTROLLER
+    leaf = local["leaf"]
+    node = tgen.net[leaf]
+    node.cmd_raises(
+        """
+ip link add {br} type bridge stp_state 0
+ip link set {br} up
+ip link add vni{vni} type vxlan id {vni} dstport 4789 local {lo} nolearning
+ip link set vni{vni} master {br}
+ip link set vni{vni} up
+ip link set eth-{host} master {br}
+ip link set eth-{host} up
+""".format(br=local["l2br"], vni=ROBOT["l2vni"], lo=LEAVES[leaf]["lo"],
+           host=local["name"])
+    )
+    tgen.net[local["name"]].cmd_raises(
+        "ip link set dev eth0 address {}".format(local["mac"])
+    )
+
+
+def _frr_config_path(tgen, rname):
+    """Return the FRR config to load for rname.
+
+    Same-subnet mode adds the robots' VNI to leaf5 with the route targets the
+    other leaves use, written to a copy in the log directory.
+    """
+    path = os.path.join(CWD, "{}/frr.conf".format(rname))
+    if not (SAME_SUBNET and rname == LOCAL_CONTROLLER["leaf"]):
+        return path
+    vni = ROBOT["l2vni"]
+    block = (
+        "  advertise-all-vni\n"
+        "  vni {vni}\n"
+        "   rd {lo}:{vni}\n"
+        "   route-target import {vni}:{vni}\n"
+        "   route-target export {vni}:{vni}\n"
+        "  exit-vni\n"
+    ).format(vni=vni, lo=LEAVES[rname]["lo"])
+    with open(path) as f:
+        config = f.read()
+    assert "  advertise-all-vni\n" in config, path
+    config = config.replace("  advertise-all-vni\n", block, 1)
+    out = os.path.join(tgen.logdir, "{}-same-subnet-frr.conf".format(rname))
+    with open(out, "w") as f:
+        f.write(config)
+    return out
 
 
 def _setup_leaf_dataplane(tgen, leaf, spec):
@@ -404,10 +561,12 @@ def setup_module(mod):
             )
 
     _setup_robot_links(tgen)
+    if SAME_SUBNET:
+        _setup_local_controller_dataplane(tgen)
 
     for rname, router in tgen.routers().items():
         logger.info("Loading router %s", rname)
-        router.load_frr_config(os.path.join(CWD, "{}/frr.conf".format(rname)))
+        router.load_frr_config(_frr_config_path(tgen, rname))
 
     tgen.start_router()
 
@@ -455,6 +614,8 @@ def _wait_for_evpn_fabric(tgen):
     for leaf, spec in LEAVES.items():
         router = tgen.gears[leaf]
         wanted = {str(L3VNI), str(spec["l2vni"])}
+        if _carries_robot_vni(leaf):
+            wanted.add(str(ROBOT["l2vni"]))
 
         def _check(router=router, wanted=wanted):
             output = router.vtysh_cmd("show evpn vni json", isjson=True)
@@ -472,6 +633,9 @@ def _prime_host_adjacencies(tgen):
     for spec in LEAVES.values():
         for host in spec["hosts"]:
             tgen.net[host].cmd("ping -c 2 -W 1 {}".format(spec["gw"]))
+    if SAME_SUBNET:
+        tgen.net[LOCAL_CONTROLLER["name"]].cmd(
+            "ping -c 2 -W 1 {}".format(ROBOT["addr"]))
 
 
 def _robot_mac_info(router):
@@ -541,11 +705,11 @@ def _location_checks(tgen, leaf):
     vtep = LEAVES[leaf]["lo"]
     prefix = "{}/32".format(ROBOT["addr"])
     checks = {}
-    for name, spec in LEAVES.items():
+    for name in LEAVES:
         router = tgen.gears[name]
         if name == leaf:
             checks[name] = ("MAC local", lambda r=router: _mac_is_local(r))
-        elif spec["l2vni"] == ROBOT["l2vni"]:
+        elif _carries_robot_vni(name):
             checks[name] = (
                 "MAC remote via {}".format(vtep),
                 lambda r=router: _mac_is_remote(r, vtep),
@@ -568,8 +732,8 @@ def _wait_for_robot_at(tgen, leaf):
 def _mobility_state(tgen):
     "Return {leaf: {type, seq, duplicate, detections}} for VNI 1000 leaves."
     state = {}
-    for name, spec in LEAVES.items():
-        if spec["l2vni"] != ROBOT["l2vni"]:
+    for name in LEAVES:
+        if not _carries_robot_vni(name):
             continue
         info = _robot_mac_info(tgen.gears[name]) or {}
         state[name] = {
@@ -589,7 +753,7 @@ def _snapshot(tgen):
     be traced to the leaf and table that still points the wrong way.
     """
     snap = {}
-    for name, spec in LEAVES.items():
+    for name in LEAVES:
         router = tgen.gears[name]
         node = tgen.net[name]
         entry = {
@@ -598,7 +762,7 @@ def _snapshot(tgen):
                 "show ip route vrf {} {}".format(TENANT_VRF, ROBOT["addr"])
             ).strip(),
         }
-        if spec["l2vni"] == ROBOT["l2vni"]:
+        if _carries_robot_vni(name):
             entry["evpn_mac"] = router.vtysh_cmd(
                 "show evpn mac vni {} mac {}".format(ROBOT["l2vni"], ROBOT["mac"])
             ).strip()
@@ -766,24 +930,47 @@ class _ControlPlaneWatcher:
         }
 
 
-def _roam(tgen, old_leaf, new_leaf):
-    "Move the robot's radio and IP from old_leaf's AP to new_leaf's AP."
-    host = tgen.net[ROBOT["name"]]
-    old_if = ROBOT["ifaces"][old_leaf]
-    new_if = ROBOT["ifaces"][new_leaf]
+def _break(tgen, leaf, roaming=True):
+    """Turn the robot's radio off at leaf's AP.
 
+    roaming=True also removes the robot's IP from that link, as the robot is
+    about to join another AP. In bbm mode the leaf then drops the robot as if
+    the AP had reported the disassociation: zebra sees the neighbor entry and
+    bridge MAC go and withdraws the robot's routes.
+    """
+    host = tgen.net[ROBOT["name"]]
+    iface = ROBOT["ifaces"][leaf]
+    cmd = _radio_cmd(iface, False)
+    if roaming:
+        cmd += " && ip addr flush dev {}".format(iface)
+    host.cmd_raises(cmd)
+    if BBM:
+        tgen.net[leaf].cmd(
+            "ip neigh del {ip} dev {br}; "
+            "bridge fdb del {mac} dev eth-{host} master".format(
+                ip=ROBOT["addr"], br=LEAVES[leaf]["l2br"], mac=ROBOT["mac"],
+                host=ROBOT["name"])
+        )
+
+
+def _make(tgen, leaf, roaming=True):
+    """Turn the robot's radio on at leaf's AP.
+
+    roaming=True moves the robot's IP and default route to that link and
+    sends one ping to the gateway, like a roaming client's gratuitous ARP.
+    The new leaf learns the MAC from this. A dropout (roaming=False) sends
+    nothing: the robot does not know its signal dropped.
+    """
+    host = tgen.net[ROBOT["name"]]
+    iface = ROBOT["ifaces"][leaf]
+    if not roaming:
+        host.cmd_raises(_radio_cmd(iface, True))
+        return
     host.cmd_raises(
-        _radio_cmd(old_if, False) + " && ip addr flush dev {}".format(old_if)
+        _radio_cmd(iface, True)
+        + " && ip addr replace {} dev {}".format(ROBOT["ip"], iface)
+        + " && ip route replace default via {} dev {}".format(ROBOT["gw"], iface)
     )
-    if ROAM_GAP > 0:
-        time.sleep(ROAM_GAP)
-    host.cmd_raises(
-        _radio_cmd(new_if, True)
-        + " && ip addr replace {} dev {}".format(ROBOT["ip"], new_if)
-        + " && ip route replace default via {} dev {}".format(ROBOT["gw"], new_if)
-    )
-    # Announce the robot on the new AP, like a roaming client's gratuitous
-    # ARP. The new leaf learns the MAC from this.
     host.cmd("ping -c 1 -W 1 {}".format(ROBOT["gw"]))
 
     if REARP_AFTER > 0:
@@ -792,10 +979,146 @@ def _roam(tgen, old_leaf, new_leaf):
             REARP_AFTER,
             host.cmd,
             ["ip neigh flush dev {i}; ping -c 1 -W 1 {gw}".format(
-                i=new_if, gw=ROBOT["gw"])],
+                i=iface, gw=ROBOT["gw"])],
         )
         timer.daemon = True
         timer.start()
+
+
+def _has_remote_copy(tgen, leaf):
+    """Return True if leaf holds zebra's copy of the robot's IP.
+
+    zebra installs IPs learned from other leaves as NOARP entries, and the
+    kernel ignores the robot's own ARP while one is present.
+    """
+    out = tgen.net[leaf].cmd("ip neigh show {} dev {}".format(
+        ROBOT["addr"], LEAVES[leaf]["l2br"]))
+    return "NOARP" in out
+
+
+def _old_location_checks(tgen, old_leaf, new_leaf):
+    """Return {leaf: (description, check)} for "the old location is gone".
+
+    A check passes once that leaf no longer points at old_leaf, either
+    because the route was withdrawn or because it now points elsewhere. The
+    new leaf must also have dropped its NOARP copy of the robot's IP. Each
+    check notes in HOW[leaf] which of the two it saw.
+    """
+    vtep = LEAVES[old_leaf]["lo"]
+    prefix = "{}/32".format(ROBOT["addr"])
+    how = {}
+    checks = {}
+
+    def mac_gone(router, name):
+        info = _robot_mac_info(router)
+        if info is None:
+            how[name] = "withdrawn"
+            return None
+        if info.get("type") == "remote" and info.get("remoteVtep") == vtep:
+            return "{} robot MAC still via {}".format(name, vtep)
+        how[name] = "replaced"
+        return None
+
+    def route_gone(router, name):
+        output = router.vtysh_cmd(
+            "show ip route vrf {} {} json".format(TENANT_VRF, prefix),
+            isjson=True)
+        entries = [e for e in output.get(prefix, [])
+                   if e.get("protocol") == "bgp" and e.get("selected")]
+        if not entries:
+            how[name] = "withdrawn"
+            return None
+        if any(nh.get("ip") == vtep for e in entries
+               for nh in e.get("nexthops", [])):
+            return "{} {} still via {}".format(name, prefix, vtep)
+        how[name] = "replaced"
+        return None
+
+    def new_leaf_clear(router, name):
+        if _has_remote_copy(tgen, name):
+            return "{} still has the NOARP copy".format(name)
+        return mac_gone(router, name)
+
+    for name in LEAVES:
+        if name == old_leaf:
+            continue
+        router = tgen.gears[name]
+        if name == new_leaf:
+            checks[name] = ("NOARP copy and old MAC gone",
+                            lambda r=router, n=name: new_leaf_clear(r, n))
+        elif _carries_robot_vni(name):
+            checks[name] = ("MAC not via {}".format(vtep),
+                            lambda r=router, n=name: mac_gone(r, n))
+        else:
+            checks[name] = ("{} not via {}".format(prefix, vtep),
+                            lambda r=router, n=name: route_gone(r, n))
+    return checks, how
+
+
+def _counter_leaves():
+    return [leaf for leaf in LEAVES if leaf != CONTROLLER_LEAF]
+
+
+def _install_probe_counters(tgen):
+    "Count probes for the robot arriving on each leaf's VXLAN devices."
+    for leaf in _counter_leaves():
+        for dev in COUNTER_DEVS.values():
+            tgen.net[leaf].cmd_raises(
+                "tc qdisc add dev {dev} clsact && "
+                "tc filter add dev {dev} ingress pref {pref} protocol ip "
+                "flower dst_ip {ip} ip_proto udp dst_port {port} "
+                "action pass".format(dev=dev, pref=COUNTER_PREF,
+                                     ip=ROBOT["addr"], port=TRAFFIC_PORT)
+            )
+
+
+def _probe_counters(tgen):
+    """Return {leaf: {"bridged": packets, "routed": packets}}."""
+    counts = {}
+    for leaf in _counter_leaves():
+        counts[leaf] = {}
+        for kind, dev in COUNTER_DEVS.items():
+            out = tgen.net[leaf].cmd(
+                "tc -s -j filter show dev {} ingress pref {}".format(
+                    dev, COUNTER_PREF))
+            packets = 0
+            try:
+                for entry in json.loads(out):
+                    for action in entry.get("options", {}).get("actions", []):
+                        packets += action.get("stats", {}).get("packets", 0)
+            except ValueError:
+                packets = None
+            counts[leaf][kind] = packets
+    return counts
+
+
+def _counter_delta(before, after):
+    return {
+        leaf: {kind: (None if after[leaf][kind] is None
+                      or before[leaf][kind] is None
+                      else after[leaf][kind] - before[leaf][kind])
+               for kind in COUNTER_DEVS}
+        for leaf in after
+    }
+
+
+def _bgp_updates_rx(tgen):
+    "Return the BGP UPDATE messages CHURN_LEAF has received, all peers."
+    output = tgen.gears[CHURN_LEAF].vtysh_cmd("show bgp neighbors json",
+                                              isjson=True)
+    return sum(peer.get("messageStats", {}).get("updatesRecv", 0)
+               for peer in output.values() if isinstance(peer, dict))
+
+
+def _bystanders(delta, old_leaf, new_leaf):
+    "Sum probes that arrived at leaves that are neither old nor new."
+    total = {kind: 0 for kind in COUNTER_DEVS}
+    for leaf, counts in delta.items():
+        if leaf in (old_leaf, new_leaf):
+            continue
+        for kind, value in counts.items():
+            total[kind] += value or 0
+    return total
 
 
 def _start_echo(tgen, duration):
@@ -811,9 +1134,9 @@ def _start_echo(tgen, duration):
     return proc
 
 
-def _start_stream(tgen, duration):
+def _start_stream(tgen, duration, controller=CONTROLLER):
     "Start the controller-side instruction stream for duration seconds."
-    return tgen.net[CONTROLLER].popen(
+    return tgen.net[controller].popen(
         ["python3", TRAFFIC_SCRIPT, "send", "--target", ROBOT["addr"],
          "--port", str(TRAFFIC_PORT), "--interval", str(PROBE_INTERVAL),
          "--duration", str(duration)],
@@ -931,6 +1254,17 @@ def _dad_config(tgen):
     }
 
 
+def _bridge_ageing(tgen, leaf):
+    "Return the MAC ageing time of leaf's robot bridge, in seconds."
+    out = tgen.net[leaf].cmd("cat /sys/class/net/{}/bridge/ageing_time".format(
+        LEAVES[leaf]["l2br"])).strip()
+    try:
+        # sysfs reports centiseconds.
+        return int(out) / 100.0
+    except ValueError:
+        return None
+
+
 def test_fabric_converged():
     "Bring the fabric up and confirm every leaf sees the robot on leaf1."
     tgen = get_topogen()
@@ -942,8 +1276,19 @@ def test_fabric_converged():
     _wait_for_robot_at(tgen, ROBOT["home_leaf"])
     check_ping(CONTROLLER, ROBOT["addr"], True, count=30, wait=1)
     check_ping(ROBOT["name"], CONTROLLER_ADDR, True, count=30, wait=1)
+    if SAME_SUBNET:
+        check_ping(ROUTED_CONTROLLER, ROBOT["addr"], True, count=30, wait=1)
+
+    _install_probe_counters(tgen)
 
     RESULTS["config"] = {
+        "roam_mode": ROAM_MODE,
+        "roam_gaps_s": ROAM_GAPS,
+        "dropouts": DROPOUTS,
+        "dropout_s": DROPOUT_SECONDS,
+        "old_leaf_mac_ageing_s": _bridge_ageing(tgen, ROBOT["home_leaf"]),
+        "controller_mode": CONTROLLER_MODE,
+        "controller": "{} {}".format(CONTROLLER, CONTROLLER_ADDR),
         "moves_per_minute": MOVES_PER_MINUTE,
         "move_period_s": MOVE_PERIOD,
         "moves": MOVES,
@@ -958,8 +1303,10 @@ def test_fabric_converged():
         "poll_interval_s": POLL_INTERVAL,
         "dad": _dad_config(tgen),
     }
-    _announce("Fabric up; robot {} on {}; DAD settings {}".format(
-        ROBOT["name"], ROBOT["home_leaf"], RESULTS["config"]["dad"]
+    _announce("Fabric up; robot {} on {}; controller {} ({}); roam mode {} "
+              "(gaps {} s); DAD settings {}".format(
+        ROBOT["name"], ROBOT["home_leaf"], RESULTS["config"]["controller"],
+        CONTROLLER_MODE, ROAM_MODE, ROAM_GAPS, RESULTS["config"]["dad"]
     ))
 
 
@@ -970,17 +1317,31 @@ def test_baseline_instruction_stream():
         pytest.skip(tgen.errors)
 
     echo = _start_echo(tgen, BASELINE_SECONDS + 30)
+    counters_before, updates_before = _probe_counters(tgen), _bgp_updates_rx(tgen)
+    sender = _start_stream(tgen, BASELINE_SECONDS)
+    reference = None
+    if SAME_SUBNET:
+        reference = _start_stream(tgen, BASELINE_SECONDS, ROUTED_CONTROLLER)
     try:
-        stream = _collect_stream(
-            _start_stream(tgen, BASELINE_SECONDS), BASELINE_SECONDS
-        )
+        stream = _collect_stream(sender, BASELINE_SECONDS)
+        if reference:
+            ref_stream = _collect_stream(reference, BASELINE_SECONDS)
     finally:
+        _stop(sender)
+        if reference:
+            _stop(reference)
         _stop(echo)
 
     # Skip the first second so ARP and socket setup do not count.
     t_start = stream["sent"][0] + 1.0
     baseline = _analyze(stream, t_start, float("inf"))
+    baseline["probes_at_leaves"] = _counter_delta(
+        counters_before, _probe_counters(tgen))
+    baseline["bgp_updates_rx"] = _bgp_updates_rx(tgen) - updates_before
     RESULTS["baseline"] = baseline
+    if reference:
+        RESULTS["baseline_routed_reference"] = _analyze(
+            ref_stream, ref_stream["sent"][0] + 1.0, float("inf"))
     _save_results(tgen)
 
     _announce(
@@ -992,6 +1353,14 @@ def test_baseline_instruction_stream():
             baseline["lost"], baseline["late"],
         )
     )
+    _announce("Baseline: {} BGP updates received on {}; probes at leaves {}".format(
+        baseline["bgp_updates_rx"], CHURN_LEAF, baseline["probes_at_leaves"]))
+    if reference:
+        ref = RESULTS["baseline_routed_reference"]
+        _announce("Baseline, routed reference controller: {} instructions, "
+                  "{} missed; probe RTT p50 {} ms, p99 {} ms".format(
+                      ref["instructions"], ref["missed_instructions"],
+                      ref["rtt_ms"]["p50"], ref["rtt_ms"]["p99"]))
     assert baseline["probes"] > 0, "No probes were sent"
     assert baseline["rtt_ms"]["p50"] is not None, (
         "No instruction reached the robot and back; the stream is broken"
@@ -1018,9 +1387,15 @@ def test_sustained_mobility():
 
     echo = _start_echo(tgen, duration + 30)
     sender = _start_stream(tgen, duration)
+    reference = None
+    ref_stream = None
+    if SAME_SUBNET:
+        # The routed controller runs through the same moves for comparison.
+        reference = _start_stream(tgen, duration, ROUTED_CONTROLLER)
     t_stream = time.time()
     current = ROBOT["home_leaf"]
     moves = []
+    boundaries = []
 
     try:
         for index in range(MOVES):
@@ -1030,13 +1405,22 @@ def test_sustained_mobility():
             new_leaf = (ROBOT["other_leaf"] if old_leaf == ROBOT["home_leaf"]
                         else ROBOT["home_leaf"])
             before = _mobility_state(tgen)
+            # Each gap is used for one move in each direction.
+            gap = ROAM_GAPS[(index // 2) % len(ROAM_GAPS)]
 
             watcher = None
+            old_watcher = None
+            old_how = {}
             if watch:
                 watcher = _ControlPlaneWatcher(
-                    _location_checks(tgen, new_leaf), watch_timeout
+                    _location_checks(tgen, new_leaf),
+                    max(2.0, watch_timeout - gap),
                 )
                 watcher.precheck()
+                old_checks, old_how = _old_location_checks(
+                    tgen, old_leaf, new_leaf)
+                old_watcher = _ControlPlaneWatcher(old_checks, watch_timeout)
+                old_watcher.precheck()
 
             t_scheduled = t_stream + PRE_ROLL + index * MOVE_PERIOD
             trace = None
@@ -1051,14 +1435,32 @@ def test_sustained_mobility():
             if delay > 0:
                 time.sleep(delay)
 
-            if watcher:
-                watcher.start()
+            # Counters at the start of this move's window.
+            boundaries.append((_probe_counters(tgen), _bgp_updates_rx(tgen)))
+
+            # Break: radio off at the old AP (and, in bbm mode, the old leaf
+            # drops the robot). Times from here are "since the break".
+            if old_watcher:
+                old_watcher.start()
             t_move = time.time()
             t_move_mono = time.monotonic()
-            _roam(tgen, old_leaf, new_leaf)
+            _break(tgen, old_leaf)
+            remaining = gap - (time.time() - t_move)
+            if remaining > 0:
+                time.sleep(remaining)
+
+            # Make: radio on at the new AP. Control-plane times for the new
+            # location are measured from here.
+            stale_copy = _has_remote_copy(tgen, new_leaf)
+            if watcher:
+                watcher.start()
+            t_make = time.time()
+            t_make_mono = time.monotonic()
+            _make(tgen, new_leaf)
             roam_ms = (time.time() - t_move) * 1000.0
 
-            control = watcher.finish(t_move_mono) if watcher else {}
+            control = watcher.finish(t_make_mono) if watcher else {}
+            old_gone = old_watcher.finish(t_move_mono) if old_watcher else {}
             after = _mobility_state(tgen)
             trace_files = trace.finish(t_move) if trace else []
 
@@ -1067,7 +1469,12 @@ def test_sustained_mobility():
                 "from": old_leaf,
                 "to": new_leaf,
                 "t_move": t_move,
+                "gap_s": gap,
+                "gap_ms": round((t_make - t_move) * 1000.0, 1),
                 "roam_ms": round(roam_ms, 1),
+                "stale_copy_at_make": stale_copy,
+                "old_location_gone_ms": old_gone,
+                "old_location_gone_how": dict(old_how),
                 "control_plane_ms": control,
                 "sequence": "{} {} -> {} {}".format(
                     old_leaf, before.get(old_leaf, {}).get("localSequence"),
@@ -1090,9 +1497,14 @@ def test_sustained_mobility():
 
         if moves:
             moves[-1]["snapshot_before_next"] = _snapshot(tgen)
+        boundaries.append((_probe_counters(tgen), _bgp_updates_rx(tgen)))
         stream = _collect_stream(sender, duration)
+        if reference:
+            ref_stream = _collect_stream(reference, duration)
     finally:
         _stop(sender)
+        if reference:
+            _stop(reference)
         _stop(echo)
 
     # Each move's window runs until the next move (or one move period).
@@ -1102,10 +1514,33 @@ def test_sustained_mobility():
         if index + 1 < len(moves):
             t_to = min(t_to, moves[index + 1]["t_move"])
         move["data_plane"] = _analyze(stream, t_from, t_to)
+        if ref_stream:
+            move["data_plane_routed_reference"] = _analyze(
+                ref_stream, t_from, t_to)
+        # Whether leaf5 still had a /32 for the robot at the end of the
+        # window. Routed traffic needs it; bridged traffic does not.
+        route = move.get("snapshot_before_next", {}).get(
+            "leaf5", {}).get("vrf_route", "")
+        move["leaf5_host_route"] = "{}/32".format(ROBOT["addr"]) in route
         cp = [ms for leaf, ms in move["control_plane_ms"].items()
               if leaf != move["to"]]
         move["all_leaves_ms"] = (
             max(cp) if cp and all(ms is not None for ms in cp) else None
+        )
+        gone = list(move["old_location_gone_ms"].values())
+        move["old_gone_all_ms"] = (
+            max(gone) if gone and all(ms is not None for ms in gone) else None
+        )
+        # Counters run from this move's break to the next move's break.
+        (c_from, u_from), (c_to, u_to) = boundaries[index], boundaries[index + 1]
+        move["probes_at_leaves"] = _counter_delta(c_from, c_to)
+        move["probes_at_bystanders"] = _bystanders(
+            move["probes_at_leaves"], move["from"], move["to"])
+        move["bgp_updates_rx"] = u_to - u_from
+        dp = move["data_plane"]
+        move["outage_beyond_gap_ms"] = (
+            round(max(0.0, dp["outage_ms"] - move["gap_ms"]), 1)
+            if dp["outage_ms"] else 0.0
         )
 
     RESULTS["moves"] = moves
@@ -1115,6 +1550,7 @@ def test_sustained_mobility():
         )
     path = _save_results(tgen)
     _print_moves_table(moves)
+    _print_roam_detail(moves)
     _announce("Results written to {}".format(path))
 
     # The robot must still be reachable at its last location.
@@ -1124,12 +1560,14 @@ def test_sustained_mobility():
 
 def _print_moves_table(moves):
     lines = [
-        "Sustained mobility ({:.1f} moves/min, deadline {:.0f} ms)".format(
-            MOVES_PER_MINUTE, DEADLINE * 1000
+        "Sustained mobility ({:.1f} moves/min, deadline {:.0f} ms, "
+        "controller {} {})".format(
+            MOVES_PER_MINUTE, DEADLINE * 1000, CONTROLLER_MODE, CONTROLLER
         ),
-        "  {:>4} {:<13} {:>9} {:>7} {:>9} {:>11} {:>11} {:<11} {}".format(
+        "  {:>4} {:<13} {:>9} {:>7} {:>9} {:>11} {:>11} {:<11} {:>7} {:<16} {}".format(
             "move", "path", "outage_ms", "missed", "max_run", "all_leaves",
-            "leaf5_ms", "sequence", "duplicate flagged on",
+            "leaf5_ms", "sequence", "l5 /32",
+            "routed ref" if SAME_SUBNET else "", "duplicate flagged on",
         ),
     ]
     def show(value):
@@ -1143,8 +1581,13 @@ def _print_moves_table(moves):
             move["mobility_before"][move["from"]]["localSequence"],
             move["mobility_after"][move["to"]]["localSequence"],
         )
+        ref = move.get("data_plane_routed_reference")
+        ref_text = ""
+        if ref:
+            ref_text = "{} missed{}".format(
+                ref["missed_instructions"], ", unrec" if ref["unrecovered"] else "")
         lines.append(
-            "  {:>4} {:<13} {:>9} {:>7} {:>9} {:>11} {:>11} {:<11} {}".format(
+            "  {:>4} {:<13} {:>9} {:>7} {:>9} {:>11} {:>11} {:<11} {:>7} {:<16} {}".format(
                 move["move"],
                 "{}->{}".format(move["from"], move["to"]),
                 "{}{}".format(dp["outage_ms"], "+" if dp["unrecovered"] else ""),
@@ -1153,11 +1596,198 @@ def _print_moves_table(moves):
                 show(move["all_leaves_ms"]),
                 show(move["control_plane_ms"].get("leaf5")),
                 seq,
+                "yes" if move["leaf5_host_route"] else "no",
+                ref_text,
                 ", ".join(dup) or "-",
             )
         )
     lines.append("  outage_ms with '+' never recovered before the next move")
+    lines.append("  l5 /32: leaf5 still had a /32 route for the robot at the "
+                 "end of the window")
+    if SAME_SUBNET:
+        lines.append("  routed ref: missed instructions for {} (routed, "
+                     "{}) in the same window".format(
+                         ROUTED_CONTROLLER, ROUTED_CONTROLLER_ADDR))
     _announce("\n".join(lines))
+
+
+def _print_roam_detail(moves):
+    lines = [
+        "Roam detail ({} mode)".format(ROAM_MODE),
+        "  {:>4} {:<13} {:>6} {:>9} {:>10} {:>11} {:>11} {:>9} {:>7} {:>8} {}".format(
+            "move", "path", "gap_ms", "outage_ms", "beyond_gap", "old_gone_ms",
+            "stale_copy", "bystander", "bgp_rx", "seq", "old route at bystanders",
+        ),
+    ]
+    show = lambda value: "-" if value is None else str(value)
+    for move in moves:
+        by = move["probes_at_bystanders"]
+        how = sorted(set(move["old_location_gone_how"].get(leaf, "?")
+                         for leaf in move["old_location_gone_how"]
+                         if leaf not in (move["from"], move["to"])))
+        lines.append(
+            "  {:>4} {:<13} {:>6} {:>9} {:>10} {:>11} {:>11} {:>9} {:>7} {:>8} {}".format(
+                move["move"],
+                "{}->{}".format(move["from"], move["to"]),
+                move["gap_ms"],
+                "{}{}".format(move["data_plane"]["outage_ms"],
+                              "+" if move["data_plane"]["unrecovered"] else ""),
+                move["outage_beyond_gap_ms"],
+                show(move["old_gone_all_ms"]),
+                "yes" if move["stale_copy_at_make"] else "no",
+                "{}/{}".format(by["bridged"], by["routed"]),
+                move["bgp_updates_rx"],
+                "{}->{}".format(
+                    move["mobility_before"][move["from"]]["localSequence"],
+                    move["mobility_after"][move["to"]]["localSequence"]),
+                ", ".join(how) or "-",
+            )
+        )
+    lines += [
+        "  gap_ms: radio off to radio on. outage_ms and old_gone_ms are "
+        "measured from radio off",
+        "  old_gone_ms: until every leaf stopped pointing at the old leaf "
+        "(and the new leaf dropped its NOARP copy)",
+        "  stale_copy: the new leaf still had the NOARP copy of the robot's IP "
+        "when the robot arrived",
+        "  bystander: probes that reached {}, bridged/routed".format(
+            ", ".join(l for l in _counter_leaves()
+                      if l not in (ROBOT["home_leaf"], ROBOT["other_leaf"]))),
+        "  bgp_rx: BGP updates {} received from this move to the next".format(
+            CHURN_LEAF),
+        "  old route at bystanders: 'withdrawn' (gone first) or 'replaced' "
+        "(new location arrived first)",
+    ]
+    _announce("\n".join(lines))
+
+
+def test_signal_dropouts():
+    "Drop the robot's signal briefly without moving it."
+    tgen = get_topogen()
+    if tgen.routers_have_failure():
+        pytest.skip(tgen.errors)
+    if DROPOUTS <= 0:
+        pytest.skip("WAREHOUSE_DROPOUTS is 0")
+    # The robot's current leaf after the sustained run.
+    leaf = (RESULTS["moves"][-1]["to"] if RESULTS["moves"]
+            else ROBOT["home_leaf"])
+    _wait_for_robot_at(tgen, leaf)
+
+    duration = PRE_ROLL + DROPOUTS * DROPOUT_SPACING + 1.0
+    _announce("Starting {} signal dropouts of {:.2f} s at {}, one every "
+              "{:.0f} s".format(DROPOUTS, DROPOUT_SECONDS, leaf, DROPOUT_SPACING))
+    echo = _start_echo(tgen, duration + 30)
+    sender = _start_stream(tgen, duration)
+    reference = (_start_stream(tgen, duration, ROUTED_CONTROLLER)
+                 if SAME_SUBNET else None)
+    t_stream = time.time()
+    events = []
+    ref_stream = None
+    try:
+        for index in range(DROPOUTS):
+            delay = t_stream + PRE_ROLL + index * DROPOUT_SPACING - time.time()
+            if delay > 0:
+                time.sleep(delay)
+            updates = _bgp_updates_rx(tgen)
+            t_break = time.time()
+            _break(tgen, leaf, roaming=False)
+            remaining = DROPOUT_SECONDS - (time.time() - t_break)
+            if remaining > 0:
+                time.sleep(remaining)
+            t_make = time.time()
+            _make(tgen, leaf, roaming=False)
+            events.append({"dropout": index + 1, "t_break": t_break,
+                           "dropout_ms": round((t_make - t_break) * 1000.0, 1),
+                           "updates_before": updates})
+        stream = _collect_stream(sender, duration)
+        if reference:
+            ref_stream = _collect_stream(reference, duration)
+    finally:
+        _stop(sender)
+        if reference:
+            _stop(reference)
+        _stop(echo)
+    updates_end = _bgp_updates_rx(tgen)
+
+    for index, event in enumerate(events):
+        t_from = event["t_break"]
+        t_to = t_from + DROPOUT_SPACING
+        if index + 1 < len(events):
+            t_to = min(t_to, events[index + 1]["t_break"])
+        dp = _analyze(stream, t_from, t_to)
+        event["data_plane"] = dp
+        if ref_stream:
+            event["data_plane_routed_reference"] = _analyze(
+                ref_stream, t_from, t_to)
+        event["outage_beyond_dropout_ms"] = round(
+            max(0.0, dp["outage_ms"] - event["dropout_ms"]), 1)
+        nxt = (events[index + 1]["updates_before"] if index + 1 < len(events)
+               else updates_end)
+        event["bgp_updates_rx"] = nxt - event["updates_before"]
+    RESULTS["dropouts"] = events
+    path = _save_results(tgen)
+
+    lines = ["Signal dropouts at {} ({} mode)".format(leaf, ROAM_MODE),
+             "  {:>7} {:>10} {:>9} {:>14} {:>7} {:>7} {}".format(
+                 "dropout", "dropout_ms", "outage_ms", "beyond_dropout",
+                 "missed", "bgp_rx", "routed ref missed" if SAME_SUBNET else "")]
+    for event in events:
+        dp = event["data_plane"]
+        ref = event.get("data_plane_routed_reference")
+        lines.append("  {:>7} {:>10} {:>9} {:>14} {:>7} {:>7} {}".format(
+            event["dropout"], event["dropout_ms"],
+            "{}{}".format(dp["outage_ms"], "+" if dp["unrecovered"] else ""),
+            event["outage_beyond_dropout_ms"], dp["missed_instructions"],
+            event["bgp_updates_rx"],
+            "{}{}".format(ref["missed_instructions"],
+                          " unrec" if ref["unrecovered"] else "") if ref else ""))
+    lines.append("Results written to {}".format(path))
+    _announce("\n".join(lines))
+
+
+def _roam_evidence(moves):
+    "Summarize the per-move evidence for the roam mode."
+    def stats(values):
+        values = [v for v in values if v is not None]
+        if not values:
+            return None
+        return {"median": _percentile(values, 50), "max": max(values),
+                "n": len(values)}
+
+    by_gap = []
+    for gap in sorted(set(m["gap_s"] for m in moves)):
+        for path in ((ROBOT["home_leaf"], ROBOT["other_leaf"]),
+                     (ROBOT["other_leaf"], ROBOT["home_leaf"])):
+            group = [m for m in moves
+                     if m["gap_s"] == gap and (m["from"], m["to"]) == path]
+            if not group:
+                continue
+            by_gap.append({
+                "gap_s": gap,
+                "path": "{}->{}".format(*path),
+                "moves": [m["move"] for m in group],
+                "outage_ms": [m["data_plane"]["outage_ms"] for m in group],
+                "unrecovered": [m["data_plane"]["unrecovered"] for m in group],
+                "stale_copy_at_make": [m["stale_copy_at_make"] for m in group],
+                "old_gone_all_ms": [m["old_gone_all_ms"] for m in group],
+                "routed_ref_unrecovered": [
+                    m["data_plane_routed_reference"]["unrecovered"]
+                    for m in group if "data_plane_routed_reference" in m],
+            })
+    return {
+        "outage_ms": stats([m["data_plane"]["outage_ms"] for m in moves]),
+        "outage_beyond_gap_ms": stats([m["outage_beyond_gap_ms"] for m in moves]),
+        "old_gone_all_ms": stats([m["old_gone_all_ms"] for m in moves]),
+        "bystander_probes_bridged": sum(
+            m["probes_at_bystanders"]["bridged"] for m in moves),
+        "bystander_probes_routed": sum(
+            m["probes_at_bystanders"]["routed"] for m in moves),
+        "bgp_updates_per_move": stats([m["bgp_updates_rx"] for m in moves]),
+        "new_leaf_sequences": [m["mobility_after"][m["to"]]["localSequence"]
+                               for m in moves],
+        "stale_copy_at_make": sum(1 for m in moves if m["stale_copy_at_make"]),
+        "by_gap": by_gap,
+    }
 
 
 def test_requirements_verdict():
@@ -1229,13 +1859,60 @@ def test_requirements_verdict():
     RESULTS["verdict"] = verdict
     path = _save_results(tgen)
 
-    lines = ["Warehouse requirements",
+    lines = ["Warehouse requirements (controller {} {}, {})".format(
+                 CONTROLLER, CONTROLLER_ADDR, CONTROLLER_MODE),
              "  {:<46} {:<28} {:<44} {}".format(
                  "requirement", "target", "measured", "result")]
     for row in verdict:
         lines.append("  {:<46} {:<28} {:<44} {}".format(
             row["requirement"], row["target"], row["measured"],
             "MET" if row["met"] else "NOT MET"))
+    refs = [m.get("data_plane_routed_reference") for m in moves]
+    if all(refs):
+        ref_unrecovered = [m["move"] for m, r in zip(moves, refs)
+                           if r["unrecovered"]]
+        lines.append(
+            "Routed reference ({}): worst {} missed per move; "
+            "never recovered on moves {}".format(
+                ROUTED_CONTROLLER,
+                max(r["missed_instructions"] for r in refs),
+                ref_unrecovered or "none"))
+    evidence = _roam_evidence(moves)
+    RESULTS["roam_evidence"] = evidence
+    path = _save_results(tgen)
+    baseline_updates = baseline.get("bgp_updates_rx")
+    lines += [
+        "Roam evidence ({} mode, {} moves)".format(ROAM_MODE, len(moves)),
+        "  outage per move (ms): {}".format(evidence["outage_ms"]),
+        "  outage beyond the radio gap (ms): {}".format(
+            evidence["outage_beyond_gap_ms"]),
+        "  until every leaf dropped the old location (ms): {}".format(
+            evidence["old_gone_all_ms"]),
+        "  new leaf still had the NOARP copy when the robot arrived: "
+        "{} of {} moves".format(evidence["stale_copy_at_make"], len(moves)),
+        "  probes that reached bystander leaves: {} bridged, {} routed "
+        "(baseline {})".format(
+            evidence["bystander_probes_bridged"],
+            evidence["bystander_probes_routed"],
+            _bystanders(baseline.get("probes_at_leaves", {}),
+                        ROBOT["home_leaf"], ROBOT["other_leaf"])
+            if baseline.get("probes_at_leaves") else "n/a"),
+        "  BGP updates at {} per move: {} (baseline {} in {:.0f} s)".format(
+            CHURN_LEAF, evidence["bgp_updates_per_move"], baseline_updates,
+            BASELINE_SECONDS),
+        "  new leaf sequence number after each move: {}".format(
+            evidence["new_leaf_sequences"]),
+        "  by gap:",
+    ]
+    for row in evidence["by_gap"]:
+        lines.append(
+            "    gap {:>4} s {:<13} outage {} unrecovered {} stale copy {} "
+            "old gone {}{}".format(
+                row["gap_s"], row["path"], row["outage_ms"],
+                row["unrecovered"], row["stale_copy_at_make"],
+                row["old_gone_all_ms"],
+                " routed ref unrecovered {}".format(row["routed_ref_unrecovered"])
+                if row["routed_ref_unrecovered"] else ""))
     lines.append("Results written to {}".format(path))
     _announce("\n".join(lines))
 
